@@ -1,79 +1,13 @@
 import { Octokit } from "@octokit/rest";
 import { BRANCH_PREFIX, BranchSafetyError } from "./git.js";
-import type { IssueLike } from "./tasks.js";
+import { logTail, withRetry, type CiRef, type CiState, type CiStatus, type CreatePrInput, type PullRequestRef, type RepoHost } from "./host.js";
+import { taskFromIssue, type IssueLike, type Task } from "./tasks.js";
 
-export interface PullRequestRef {
-  number: number;
-  url: string;
-  state: "open" | "closed";
-  merged: boolean;
-  draft: boolean;
-  head: string;
-}
+export { withRetry } from "./host.js";
+export type { CiState, CiStatus, CreatePrInput, PullRequestRef } from "./host.js";
 
-export interface CreatePrInput {
-  head: string;
-  base: string;
-  title: string;
-  body: string;
-  draft: boolean;
-  labels: string[];
-}
-
-export type CiState = "pending" | "success" | "failure" | "none";
-
-export interface CiStatus {
-  state: CiState;
-  /** Human-readable summary of failing checks plus log tails, for feeding back to the coder. */
-  details: string;
-}
-
-/** Everything the runner needs from GitHub. Mocked in tests. */
-export interface GitHubApi {
-  /** Most recent PR (any state) whose head is `branch`, if any. */
-  findPrForBranch(branch: string): Promise<PullRequestRef | undefined>;
-  createPr(input: CreatePrInput): Promise<PullRequestRef>;
-  updatePr(number: number, patch: { body?: string; title?: string }): Promise<void>;
-  addLabels(number: number, labels: string[]): Promise<void>;
-  comment(number: number, body: string): Promise<void>;
-  listLabeledIssues(label: string): Promise<IssueLike[]>;
-  ciStatus(sha: string): Promise<CiStatus>;
-}
-
-export interface RetryOptions {
-  retries?: number;
-  baseDelayMs?: number;
-  sleep?: (ms: number) => Promise<void>;
-}
-
-const sleepReal = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Retry transient GitHub failures (5xx, 429, secondary rate limits, network). */
-export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
-  const retries = opts.retries ?? 4;
-  const base = opts.baseDelayMs ?? 1000;
-  const sleep = opts.sleep ?? sleepReal;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      const err = e as { status?: number; response?: { headers?: Record<string, string> }; code?: string };
-      const status = err.status ?? 0;
-      const retryAfter = Number(err.response?.headers?.["retry-after"]);
-      const rateLimited =
-        status === 429 ||
-        (status === 403 && err.response?.headers?.["x-ratelimit-remaining"] === "0") ||
-        (status === 403 && /secondary rate limit/i.test(String((e as Error).message)));
-      const transient =
-        status >= 500 || rateLimited || ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(err.code ?? "");
-      if (!transient || attempt >= retries) throw e;
-      const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : base * 2 ** attempt;
-      await sleep(Math.min(delay, 5 * 60_000));
-    }
-  }
-}
-
-export class OctokitGitHub implements GitHubApi {
+export class OctokitGitHub implements RepoHost {
+  readonly kind = "github" as const;
   private readonly gh: Octokit;
 
   constructor(
@@ -84,6 +18,10 @@ export class OctokitGitHub implements GitHubApi {
     octokit?: Octokit,
   ) {
     this.gh = octokit ?? new Octokit({ auth: token, userAgent: "claude-foreman" });
+  }
+
+  issueRef(number: number): string {
+    return `Closes #${number}`;
   }
 
   async findPrForBranch(branch: string): Promise<PullRequestRef | undefined> {
@@ -126,7 +64,7 @@ export class OctokitGitHub implements GitHubApi {
         maintainer_can_modify: true,
       }),
     );
-    if (input.labels.length) await this.addLabels(data.number, input.labels);
+    if (input.labels.length) await this.addPrLabels(data.number, input.labels);
     return {
       number: data.number,
       url: data.html_url,
@@ -143,7 +81,15 @@ export class OctokitGitHub implements GitHubApi {
     );
   }
 
-  async addLabels(number: number, labels: string[]): Promise<void> {
+  async addPrLabels(number: number, labels: string[]): Promise<void> {
+    await this.addLabels(number, labels);
+  }
+
+  async addIssueLabels(number: number, labels: string[]): Promise<void> {
+    await this.addLabels(number, labels);
+  }
+
+  private async addLabels(number: number, labels: string[]): Promise<void> {
     if (!labels.length) return;
     try {
       await withRetry(() =>
@@ -155,10 +101,22 @@ export class OctokitGitHub implements GitHubApi {
     }
   }
 
-  async comment(number: number, body: string): Promise<void> {
+  async commentPr(number: number, body: string): Promise<void> {
+    await this.comment(number, body);
+  }
+
+  async commentIssue(number: number, body: string): Promise<void> {
+    await this.comment(number, body);
+  }
+
+  private async comment(number: number, body: string): Promise<void> {
     await withRetry(() =>
       this.gh.issues.createComment({ owner: this.owner, repo: this.repo, issue_number: number, body }),
     );
+  }
+
+  async listTaskIssues(label: string): Promise<Task[]> {
+    return (await this.listLabeledIssues(label)).map(taskFromIssue);
   }
 
   async listLabeledIssues(label: string): Promise<IssueLike[]> {
@@ -177,11 +135,12 @@ export class OctokitGitHub implements GitHubApi {
   }
 
   /**
-   * Combine check runs and legacy commit statuses for `sha`. On failure,
+   * Combine check runs and legacy commit statuses for the commit. On failure,
    * collect failing check names, their output summaries and the tail of
    * failed GitHub Actions job logs.
    */
-  async ciStatus(sha: string): Promise<CiStatus> {
+  async ciStatus(ref: CiRef): Promise<CiStatus> {
+    const sha = ref.sha;
     const [runs, combined] = await Promise.all([
       withRetry(() =>
         this.gh.paginate(this.gh.checks.listForRef, { owner: this.owner, repo: this.repo, ref: sha, per_page: 100 }),
@@ -216,20 +175,14 @@ export class OctokitGitHub implements GitHubApi {
   }
 
   /** Check-run ids for GitHub Actions jobs equal job ids; fetch the log tail if available. */
-  private async jobLogTail(jobId: number, lines = 120): Promise<string | undefined> {
+  private async jobLogTail(jobId: number): Promise<string | undefined> {
     try {
       const res = await this.gh.actions.downloadJobLogsForWorkflowRun({
         owner: this.owner,
         repo: this.repo,
         job_id: jobId,
       });
-      const text = typeof res.data === "string" ? res.data : String(res.data);
-      const all = text.replace(/\r\n/g, "\n").split("\n");
-      // strip the timestamp prefix GitHub adds to every line
-      return all
-        .slice(-lines)
-        .map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s/, ""))
-        .join("\n");
+      return logTail(typeof res.data === "string" ? res.data : String(res.data));
     } catch {
       return undefined; // not an Actions job, or logs expired
     }

@@ -60,7 +60,7 @@ export class Git {
     readonly repoDir: string,
     readonly remote: string,
     readonly baseBranch: string,
-    private readonly opts: { token?: string; env?: NodeJS.ProcessEnv } = {},
+    private readonly opts: { auth?: GitHttpAuth; env?: NodeJS.ProcessEnv } = {},
   ) {
     assertSafeRefName(baseBranch);
   }
@@ -247,11 +247,20 @@ export class Git {
 
   /** Auth for fetch/push only, via an http header the agent process never sees. */
   private authConfig(): string[] {
-    const token = this.opts.token;
-    if (!token) return [];
-    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
-    return ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}`];
+    const auth = this.opts.auth;
+    if (!auth) return [];
+    return ["-c", `http.${auth.urlPrefix}.extraheader=AUTHORIZATION: ${auth.header}`];
   }
+}
+
+/** HTTP auth for git fetch/push against a host: URL prefix the header applies to, and the header value. */
+export interface GitHttpAuth {
+  urlPrefix: string;
+  header: string;
+}
+
+export function githubGitAuth(token: string): GitHttpAuth {
+  return { urlPrefix: "https://github.com/", header: `basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}` };
 }
 
 export function assertSafeRefName(name: string): void {

@@ -4,7 +4,7 @@ import type { CheckResult, CheckRunner } from "./checks.js";
 import { checksSummary } from "./checks.js";
 import type { ForemanConfig } from "./config.js";
 import { BranchSafetyError, branchFor, type ChangedFile } from "./git.js";
-import type { GitHubApi, PullRequestRef } from "./github.js";
+import type { CiRef, CiStatus, CreatePrInput, PullRequestRef, RepoHost } from "./host.js";
 import {
   coderPrompt,
   escalationPrompt,
@@ -77,8 +77,8 @@ export interface LoopDeps {
   config: ForemanConfig;
   state: StateStore;
   git: GitOps;
-  /** Absent in dry-run without a token. */
-  github?: GitHubApi;
+  /** GitHub or Azure DevOps. Absent in dry-run without a token. */
+  host?: RepoHost;
   agents: AgentRunner;
   checks: CheckRunner;
   gate: DiffGate;
@@ -170,8 +170,8 @@ export class TaskRunner {
 
     // Reconcile with GitHub: if state was lost (fresh CI cache, new machine)
     // but a PR already exists for this task, do not redo the work.
-    if (!d.dryRun && d.github && !st0.forceRetry && st0.attempts === 0) {
-      const pr = await d.github.findPrForBranch(branch).catch(() => undefined);
+    if (!d.dryRun && d.host && !st0.forceRetry && st0.attempts === 0) {
+      const pr = await d.host.findPrForBranch(branch).catch(() => undefined);
       if (pr && (pr.state === "open" || pr.merged)) {
         const status = pr.draft ? "needs_human" : "done";
         await d.state.updateTask(task.id, { status, prUrl: pr.url, prNumber: pr.number, branch, finishedAt: new Date(this.now()).toISOString() });
@@ -409,9 +409,10 @@ export class TaskRunner {
         models: ctx.models,
         history: done.history,
         ...(review ? { review } : {}),
+        ...this.issueRefFor(task),
       });
 
-      if (d.dryRun || !d.github) {
+      if (d.dryRun || !d.host) {
         d.log.info(`  ✔ checks passed${d.dryRun ? " (dry run: not pushing, no PR)" : ""}`);
         await d.state.updateTask(task.id, { status: "done", finishedAt: new Date(this.now()).toISOString() });
         return this.outcome(task, "done", ctx.started, ctx.models, { branch: ctx.branch, summary, prBody: body, checks: run.results });
@@ -425,14 +426,15 @@ export class TaskRunner {
         body,
         draft: cfg.pr.draft,
         labels: cfg.pr.labels,
+        ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
       });
       await d.state.updateTask(task.id, { prUrl: pr.url, prNumber: pr.number });
       d.log.info(`  ✔ PR ${pr.url}`);
 
       if (cfg.ci.wait) {
-        const ci = await this.waitForCi(sha, ctx.signal);
+        const ci = await this.waitForCi({ sha, branch: ctx.branch, prNumber: pr.number }, ctx.signal);
         if (ci.state === "failure") {
-          if (await fail("ci_failed", ci.details || "GitHub CI failed (no details available).")) {
+          if (await fail("ci_failed", ci.details || "CI failed (no details available).")) {
             return this.stopForLimit(ctx, "stuck", pr);
           }
           continue;
@@ -509,11 +511,12 @@ export class TaskRunner {
     });
   }
 
-  private async openOrUpdatePr(
-    existing: PullRequestRef | undefined,
-    input: { head: string; base: string; title: string; body: string; draft: boolean; labels: string[] },
-  ): Promise<PullRequestRef> {
-    const gh = this.d.github!;
+  private issueRefFor(task: Task): { issueRef?: string } {
+    return task.issueNumber && this.d.host ? { issueRef: this.d.host.issueRef(task.issueNumber) } : {};
+  }
+
+  private async openOrUpdatePr(existing: PullRequestRef | undefined, input: CreatePrInput): Promise<PullRequestRef> {
+    const gh = this.d.host!;
     const pr = existing ?? (await gh.findPrForBranch(input.head));
     if (pr && pr.state === "open") {
       await gh.updatePr(pr.number, { body: input.body, title: input.title });
@@ -522,17 +525,17 @@ export class TaskRunner {
     return gh.createPr(input);
   }
 
-  private async waitForCi(sha: string, signal: AbortSignal): Promise<{ state: "success" | "failure" | "pending" | "none"; details: string }> {
+  private async waitForCi(ref: CiRef, signal: AbortSignal): Promise<CiStatus> {
     const cfg = this.d.config.ci;
     const start = this.now();
     const deadline = start + cfg.timeoutMinutes * 60_000;
-    this.d.log.info(`  waiting for CI on ${sha.slice(0, 8)}…`);
+    this.d.log.info(`  waiting for CI on ${ref.sha.slice(0, 8)}…`);
     for (;;) {
       await this.sleep(cfg.pollSeconds * 1000, signal);
       if (signal.aborted) return { state: "pending", details: "" };
       let s;
       try {
-        s = await this.d.github!.ciStatus(sha);
+        s = await this.d.host!.ciStatus(ref);
       } catch (e) {
         this.d.log.warn(`  CI status error: ${(e as Error).message}`);
         s = { state: "pending" as const, details: "" };
@@ -566,10 +569,11 @@ export class TaskRunner {
       costUsd: st.costUsd,
       durationMs: this.now() - ctx.started,
       plan: ctx.plan,
+      ...this.issueRefFor(ctx.task),
     });
 
     let prRef = pr;
-    if (!d.dryRun && d.github) {
+    if (!d.dryRun && d.host) {
       try {
         prRef = await this.publishFailure(ctx, body, pr);
       } catch (e) {
@@ -594,7 +598,7 @@ export class TaskRunner {
   /** Commit salvageable WIP (minus safety violations), push, and open/label a draft PR. */
   private async publishFailure(ctx: Ctx, body: string, existing?: PullRequestRef): Promise<PullRequestRef | undefined> {
     const d = this.d;
-    const gh = d.github!;
+    const gh = d.host!;
     const labels = [...d.config.pr.labels, d.config.pr.needsHumanLabel];
 
     let changes = await d.git.stagedChanges(ctx.dir, ctx.baseSha);
@@ -612,8 +616,8 @@ export class TaskRunner {
       await d.git.push(ctx.dir, ctx.branch);
       const pr = existing ?? (await gh.findPrForBranch(ctx.branch));
       if (pr && pr.state === "open") {
-        await gh.comment(pr.number, body);
-        await gh.addLabels(pr.number, [d.config.pr.needsHumanLabel]);
+        await gh.commentPr(pr.number, body);
+        await gh.addPrLabels(pr.number, [d.config.pr.needsHumanLabel]);
         return pr;
       }
       return gh.createPr({
@@ -623,12 +627,13 @@ export class TaskRunner {
         body,
         draft: true,
         labels,
+        ...(ctx.task.issueNumber ? { issueNumber: ctx.task.issueNumber } : {}),
       });
     }
-    // Nothing to put in a PR (GitHub rejects empty PRs). Report on the issue if there is one.
+    // Nothing to put in a PR (hosts reject empty PRs). Report on the issue / work item if there is one.
     if (ctx.task.issueNumber) {
-      await gh.comment(ctx.task.issueNumber, body);
-      await gh.addLabels(ctx.task.issueNumber, [d.config.pr.needsHumanLabel]);
+      await gh.commentIssue(ctx.task.issueNumber, body);
+      await gh.addIssueLabels(ctx.task.issueNumber, [d.config.pr.needsHumanLabel]);
     }
     return undefined;
   }

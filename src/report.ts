@@ -49,9 +49,9 @@ function escapeCell(s: string): string {
   return s.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
 }
 
-function taskSection(task: Task): string {
+function taskSection(task: Task, issueRef?: string): string {
   const out = [`**Task \`${task.id}\`:** ${task.title}`];
-  if (task.issueNumber) out.push(`Closes #${task.issueNumber}`);
+  if (task.issueNumber) out.push(issueRef ?? `Closes #${task.issueNumber}`);
   if (task.acceptance.length) {
     out.push("", "**Acceptance criteria**", ...task.acceptance.map((a) => `- ${a}`));
   }
@@ -69,6 +69,8 @@ export interface PrBodyInput {
   models: string[];
   history: AttemptRecord[];
   review?: { verdict: string; summary: string; notes?: string[] };
+  /** Host-specific reference to the source issue / work item. */
+  issueRef?: string;
 }
 
 export function successPrBody(i: PrBodyInput): string {
@@ -76,7 +78,7 @@ export function successPrBody(i: PrBodyInput): string {
     "## Summary",
     i.summary.trim() || "_(no summary provided)_",
     "",
-    taskSection(i.task),
+    taskSection(i.task, i.issueRef),
     "",
     "## What changed",
     "```",
@@ -116,6 +118,7 @@ export interface FailureReportInput {
   costUsd: number;
   durationMs: number;
   plan?: string;
+  issueRef?: string;
 }
 
 export function failureReport(i: FailureReportInput): string {
@@ -124,7 +127,7 @@ export function failureReport(i: FailureReportInput): string {
     "",
     `foreman stopped working on this task: **${i.reason}**.`,
     "",
-    taskSection(i.task),
+    taskSection(i.task, i.issueRef),
     "",
     "## Last error",
     "```",

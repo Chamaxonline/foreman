@@ -6,8 +6,8 @@ import { silentLogger } from "../src/loop.js";
 import { Orchestrator, type OrchestratorDeps, type TaskExecutor } from "../src/orchestrator.js";
 import type { TaskOutcome } from "../src/report.js";
 import { StateStore } from "../src/state.js";
-import type { Task } from "../src/tasks.js";
-import { FakeGitHub, makeConfig, makeTask } from "./helpers/fakes.js";
+import { taskFromIssue, type Task } from "../src/tasks.js";
+import { FakeHost, makeConfig, makeTask } from "./helpers/fakes.js";
 
 function outcome(task: Task, status: TaskOutcome["status"], extra: Partial<TaskOutcome> = {}): TaskOutcome {
   return { taskId: task.id, title: task.title, status, dryRun: false, attempts: 1, costUsd: 0, durationMs: 0, models: [], checks: [], history: [], ...extra };
@@ -105,10 +105,10 @@ describe("Orchestrator.runOnce", () => {
     await expect(orch.runOnce({ taskId: "nope" })).rejects.toThrow(/not found/);
   });
 
-  it("merges labeled GitHub issues into the queue", async () => {
-    const gh = new FakeGitHub();
-    gh.listLabeledIssues = async () => [{ number: 9, title: "From issue", body: "## Acceptance\n- ok", labels: ["foreman", "priority:high"] }];
-    const { orch, ran } = await setup({ github: gh, config: makeConfig("issues: { enabled: true }") });
+  it("merges labeled issues / work items into the queue", async () => {
+    const gh = new FakeHost();
+    gh.issueTasks = [taskFromIssue({ number: 9, title: "From issue", body: "## Acceptance\n- ok", labels: ["foreman", "priority:high"] })];
+    const { orch, ran } = await setup({ host: gh, config: makeConfig("issues: { enabled: true }") });
     await orch.runOnce();
     expect(ran).toEqual(["issue-9", "t1"]);
   });

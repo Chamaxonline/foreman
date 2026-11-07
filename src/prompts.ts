@@ -56,7 +56,7 @@ const FEEDBACK_HEADERS: Record<FeedbackKind, string> = {
   rejected:
     "The runner REJECTED your last diff because it violates foreman's safety rules. The offending changes have been reverted.",
   review_changes: "The reviewer REQUESTED CHANGES on your last attempt.",
-  ci_failed: "GitHub CI FAILED on the pull request for your last attempt.",
+  ci_failed: "CI FAILED on the pull request for your last attempt.",
 };
 
 /** Prompt for a follow-up attempt (same or new session). */

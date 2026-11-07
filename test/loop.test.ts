@@ -6,7 +6,7 @@ import {
   FakeAgents,
   FakeChecks,
   FakeGit,
-  FakeGitHub,
+  FakeHost,
   failingRun,
   makeDeps,
   makeTask,
@@ -20,7 +20,7 @@ const editingCoder = (w: () => World) => () => (w().edit("src/a.ts"), {});
 describe("TaskRunner: happy path", () => {
   it("plans, codes, checks, reviews, commits, pushes and opens a PR", async () => {
     const { deps, world, state } = await makeDeps();
-    const gh = deps.github as FakeGitHub;
+    const gh = deps.host as FakeHost;
     const out = await new TaskRunner(deps).runTask(makeTask());
 
     expect(out.status).toBe("done");
@@ -62,7 +62,7 @@ describe("TaskRunner: happy path", () => {
 
   it("reconciles with an existing PR when state was lost", async () => {
     const { deps, state } = await makeDeps();
-    (deps.github as FakeGitHub).existing = { number: 7, url: "u", state: "open", merged: false, draft: false, head: "foreman/t1" };
+    (deps.host as FakeHost).existing = { number: 7, url: "u", state: "open", merged: false, draft: false, head: "foreman/t1" };
     const out = await new TaskRunner(deps).runTask(makeTask());
     expect(out.status).toBe("skipped");
     expect(state.get("t1")).toMatchObject({ status: "done", prNumber: 7 });
@@ -125,7 +125,7 @@ describe("TaskRunner: retries, escalation, stuck", () => {
     const agents = new FakeAgents({ coder: () => (world.edit("src/a.ts"), {}) });
     const made = await makeDeps({ checks, agents, configYaml: "limits: { maxAttemptsPerTask: 8 }" });
     world = made.world;
-    const gh = made.deps.github as FakeGitHub;
+    const gh = made.deps.host as FakeHost;
     const out = await new TaskRunner(made.deps).runTask(makeTask());
 
     expect(out.status).toBe("needs_human");
@@ -228,7 +228,7 @@ describe("TaskRunner: review", () => {
     expect(agents.byRole("reviewer")).toHaveLength(2);
     expect(agents.byRole("coder")[1]!.prompt).toContain("handle empty input");
     expect(made.state.get("t1")!.history.map((h) => h.outcome)).toEqual(["review_changes", "pass"]);
-    expect((made.deps.github as FakeGitHub).prs[0]!.body).toContain("**approve**: Good");
+    expect((made.deps.host as FakeHost).prs[0]!.body).toContain("**approve**: Good");
   });
 
   it("can be disabled", async () => {
@@ -244,7 +244,7 @@ describe("TaskRunner: CI", () => {
     const agents = new FakeAgents({ coder: () => (world.edit("src/a.ts"), {}) });
     const made = await makeDeps({ agents, configYaml: "ci: { wait: true }" });
     world = made.world;
-    const gh = made.deps.github as FakeGitHub;
+    const gh = made.deps.host as FakeHost;
     gh.ci = [
       { state: "pending", details: "" },
       { state: "failure", details: "### build (failure)\nlint error: no-unused-vars" },
@@ -255,7 +255,7 @@ describe("TaskRunner: CI", () => {
     expect(gh.prs).toHaveLength(1);
     expect(gh.updates).toHaveLength(1); // second push updated the existing PR
     expect(world.pushes).toEqual(["foreman/t1", "foreman/t1"]);
-    expect(agents.byRole("coder")[1]!.prompt).toContain("GitHub CI FAILED");
+    expect(agents.byRole("coder")[1]!.prompt).toContain("CI FAILED");
     expect(agents.byRole("coder")[1]!.prompt).toContain("no-unused-vars");
     expect(made.state.get("t1")!.history.map((h) => h.outcome)).toEqual(["pass", "ci_failed", "pass"]);
   });
@@ -264,7 +264,7 @@ describe("TaskRunner: CI", () => {
 describe("TaskRunner: dry run", () => {
   it("does everything except push and open PRs", async () => {
     const made = await makeDeps({ dryRun: true });
-    const gh = made.deps.github as FakeGitHub;
+    const gh = made.deps.host as FakeHost;
     const out = await new TaskRunner(made.deps).runTask(makeTask());
     expect(out.status).toBe("done");
     expect(out.dryRun).toBe(true);
@@ -283,7 +283,7 @@ describe("TaskRunner: dry run", () => {
     const out = await new TaskRunner(made.deps).runTask(makeTask());
     expect(out.status).toBe("needs_human");
     expect(world.pushes).toEqual([]);
-    expect((made.deps.github as FakeGitHub).prs).toEqual([]);
+    expect((made.deps.host as FakeHost).prs).toEqual([]);
     expect(out.prBody).toContain("needs a human");
   });
 });

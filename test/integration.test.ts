@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRuntime } from "../src/runtime.js";
-import { FakeAgents, FakeGitHub } from "./helpers/fakes.js";
+import { FakeAgents, FakeHost } from "./helpers/fakes.js";
 import { git, makeRepo } from "./helpers/gitrepo.js";
 
 /**
@@ -37,8 +37,8 @@ describe("integration", () => {
         return { text: `attempt ${n}` };
       },
     });
-    const gh = new FakeGitHub();
-    const rt = await createRuntime({ repoDir: repo.work, dryRun: false, agents, github: gh });
+    const gh = new FakeHost();
+    const rt = await createRuntime({ repoDir: repo.work, dryRun: false, agents, host: gh });
     const report = await rt.orchestrator.runOnce();
 
     expect(report.tasks[0]).toMatchObject({ taskId: "answer", status: "done", attempts: 3 });
@@ -63,8 +63,8 @@ describe("integration", () => {
     const agents = new FakeAgents({
       coder: async (call) => (await writeFile(path.join(call.cwd, "answer.txt"), "42\n"), {}),
     });
-    const gh = new FakeGitHub();
-    const rt = await createRuntime({ repoDir: repo.work, dryRun: true, agents, github: gh });
+    const gh = new FakeHost();
+    const rt = await createRuntime({ repoDir: repo.work, dryRun: true, agents, host: gh });
     const report = await rt.orchestrator.runOnce();
     expect(report.tasks[0]).toMatchObject({ status: "done", dryRun: true });
     expect(gh.prs).toEqual([]);

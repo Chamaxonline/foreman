@@ -1,9 +1,9 @@
 import type { ForemanConfig } from "./config.js";
-import type { GitHubApi } from "./github.js";
+import type { RepoHost } from "./host.js";
 import { backoffMs, type Logger } from "./loop.js";
 import { writeRunReport, type RunReport, type TaskOutcome } from "./report.js";
 import type { StateStore } from "./state.js";
-import { sortByPriority, taskFromIssue, type Task } from "./tasks.js";
+import { sortByPriority, type Task } from "./tasks.js";
 
 export interface TaskExecutor {
   runTask(task: Task): Promise<TaskOutcome>;
@@ -12,7 +12,7 @@ export interface TaskExecutor {
 export interface OrchestratorDeps {
   config: ForemanConfig;
   state: StateStore;
-  github?: GitHubApi;
+  host?: RepoHost;
   log: Logger;
   dryRun: boolean;
   reportsDir: string;
@@ -47,22 +47,21 @@ export class Orchestrator {
         }));
   }
 
-  /** tasks.yaml plus (optionally) open GitHub issues labeled for foreman. */
+  /** tasks.yaml plus (optionally) open issues / work items labeled for foreman. */
   async collectTasks(): Promise<Task[]> {
     const tasks = await this.d.loadFileTasks();
     const ids = new Set(tasks.map((t) => t.id.toLowerCase()));
-    if (this.d.config.issues.enabled && this.d.github) {
+    if (this.d.config.issues.enabled && this.d.host) {
       try {
-        const issues = await this.d.github.listLabeledIssues(this.d.config.issues.label);
-        for (const issue of issues) {
-          const t = taskFromIssue(issue);
+        const issueTasks = await this.d.host.listTaskIssues(this.d.config.issues.label);
+        for (const t of issueTasks) {
           if (!ids.has(t.id.toLowerCase())) {
             tasks.push(t);
             ids.add(t.id.toLowerCase());
           }
         }
       } catch (e) {
-        this.d.log.warn(`Could not list GitHub issues: ${(e as Error).message}`);
+        this.d.log.warn(`Could not list issues / work items: ${(e as Error).message}`);
       }
     }
     return tasks;

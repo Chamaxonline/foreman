@@ -113,8 +113,22 @@ const agentSchema = z
   })
   .prefault({});
 
+const azureSchema = z
+  .object({
+    /** https://dev.azure.com/<org> (or an Azure DevOps Server collection URL). Inferred from the remote when omitted. */
+    orgUrl: z.string().url().optional(),
+    project: z.string().min(1).optional(),
+    repository: z.string().min(1).optional(),
+    /** How to send the token: PAT (Basic) or bearer (System.AccessToken / Entra ID). auto: SYSTEM_ACCESSTOKEN → bearer, else PAT. */
+    tokenType: z.enum(["auto", "pat", "bearer"]).default("auto"),
+  })
+  .prefault({});
+
 export const configSchema = z.object({
-  /** owner/name. Inferred from the `origin` remote when omitted. */
+  /** Where PRs are opened. auto: detected from the remote URL. */
+  provider: z.enum(["auto", "github", "azure-devops"]).default("auto"),
+  azureDevOps: azureSchema,
+  /** GitHub owner/name. Inferred from the `origin` remote when omitted. */
   repo: z
     .string()
     .regex(/^[\w.-]+\/[\w.-]+$/, "repo must look like owner/name")

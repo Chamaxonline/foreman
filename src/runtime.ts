@@ -4,8 +4,10 @@ import path from "node:path";
 import { resolveAuth, SdkAgentRunner, type AgentRunner } from "./claude.js";
 import { ShellCheckRunner } from "./checks.js";
 import { loadConfig, type ForemanConfig } from "./config.js";
-import { Git, parseGitHubRemote } from "./git.js";
-import { OctokitGitHub, type GitHubApi } from "./github.js";
+import { AzureDevOpsHost, azureGitAuth, azureToken, isAzureRemote, parseAzureRemote, type AzureRepoRef } from "./azure.js";
+import { Git, githubGitAuth, parseGitHubRemote, type GitHttpAuth } from "./git.js";
+import { OctokitGitHub } from "./github.js";
+import type { HostKind, RepoHost } from "./host.js";
 import { TaskRunner, type Logger } from "./loop.js";
 import { Orchestrator } from "./orchestrator.js";
 import { loadRoles } from "./roles.js";
@@ -22,7 +24,7 @@ export interface RuntimeOptions {
   tasksFromRemote?: boolean;
   /** Injected for tests. */
   agents?: AgentRunner;
-  github?: GitHubApi;
+  host?: RepoHost;
 }
 
 export function githubToken(env = process.env): string | undefined {
@@ -70,11 +72,83 @@ export async function ensureLocalExclude(repoDir: string, git: Git): Promise<voi
   }
 }
 
+export interface ResolvedHost {
+  kind: HostKind;
+  host?: RepoHost;
+  gitAuth?: GitHttpAuth;
+  description: string;
+}
+
+/**
+ * Pick GitHub or Azure DevOps (config.provider, else the remote URL), find the
+ * repository coordinates and the runner's token. Without a token this only
+ * works for dry runs.
+ */
+export function resolveHost(config: ForemanConfig, remoteUrl: string, env: NodeJS.ProcessEnv, dryRun: boolean): ResolvedHost {
+  const kind: HostKind =
+    config.provider !== "auto"
+      ? config.provider
+      : isAzureRemote(remoteUrl) || config.azureDevOps.orgUrl
+        ? "azure-devops"
+        : "github";
+
+  if (kind === "azure-devops") {
+    const parsed = parseAzureRemote(remoteUrl);
+    const az = config.azureDevOps;
+    const ref = {
+      orgUrl: az.orgUrl ?? parsed?.orgUrl,
+      project: az.project ?? parsed?.project,
+      repository: az.repository ?? parsed?.repository,
+    };
+    const token = azureToken(env, az.tokenType);
+    if (!ref.orgUrl || !ref.project || !ref.repository) {
+      if (dryRun) return { kind, description: "Azure DevOps (repository unknown; dry run)" };
+      throw new Error(
+        "Could not determine the Azure DevOps repository from the remote URL. Set azureDevOps.orgUrl, project and repository in foreman.config.yaml.",
+      );
+    }
+    const full = ref as AzureRepoRef;
+    const where = `${full.orgUrl}/${full.project}/_git/${full.repository}`;
+    if (!token) {
+      if (dryRun) return { kind, description: `Azure DevOps ${where} (no token; dry run)` };
+      throw new Error(
+        "No Azure DevOps token. Set FOREMAN_AZURE_TOKEN (or AZURE_DEVOPS_EXT_PAT) to a PAT, or SYSTEM_ACCESSTOKEN in Azure Pipelines; or use `foreman dry-run`.",
+      );
+    }
+    return {
+      kind,
+      host: new AzureDevOpsHost(full, token, config.baseBranch),
+      gitAuth: azureGitAuth(full, token),
+      description: `Azure DevOps ${where} (token from ${token.source})`,
+    };
+  }
+
+  const token = githubToken(env);
+  let owner: string | undefined;
+  let repo: string | undefined;
+  if (config.repo) [owner, repo] = config.repo.split("/");
+  else ({ owner, repo } = parseGitHubRemote(remoteUrl) ?? {});
+  if (token && owner && repo) {
+    return {
+      kind,
+      host: new OctokitGitHub(owner, repo, token, config.baseBranch),
+      gitAuth: githubGitAuth(token),
+      description: `GitHub ${owner}/${repo}`,
+    };
+  }
+  if (dryRun) return { kind, description: `GitHub ${owner && repo ? `${owner}/${repo}` : "(repository unknown)"} (no token; dry run)` };
+  throw new Error(
+    !token
+      ? "No GitHub token. Set GITHUB_TOKEN (or FOREMAN_GITHUB_TOKEN), or use `foreman dry-run`."
+      : "Could not determine the GitHub repository. Set `repo: owner/name` in foreman.config.yaml.",
+  );
+}
+
 export interface Runtime {
   config: ForemanConfig;
   state: StateStore;
   git: Git;
-  github?: GitHubApi;
+  host?: RepoHost;
   log: Logger;
   orchestrator: Orchestrator;
   stateDir: string;
@@ -87,30 +161,13 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
   const log = makeLogger(path.join(stateDir, "logs", "foreman.log"), opts.verbose);
   const state = await StateStore.open(stateDir, { dayBoundary: config.dayBoundary });
 
-  const token = githubToken();
-  const git = new Git(repoDir, config.remote, config.baseBranch, token ? { token } : {});
+  const remoteUrl = await new Git(repoDir, config.remote, config.baseBranch).remoteUrl().catch(() => "");
+  // An injected host (tests, embedding) needs no token.
+  const resolved = resolveHost(config, remoteUrl, process.env, opts.dryRun || Boolean(opts.host));
+  const host = opts.host ?? resolved.host;
+  const git = new Git(repoDir, config.remote, config.baseBranch, resolved.gitAuth ? { auth: resolved.gitAuth } : {});
   await ensureLocalExclude(repoDir, git);
-
-  let github = opts.github;
-  if (!github) {
-    let owner: string | undefined;
-    let repo: string | undefined;
-    if (config.repo) [owner, repo] = config.repo.split("/");
-    else {
-      const parsed = parseGitHubRemote(await git.remoteUrl().catch(() => ""));
-      owner = parsed?.owner;
-      repo = parsed?.repo;
-    }
-    if (token && owner && repo) {
-      github = new OctokitGitHub(owner, repo, token, config.baseBranch);
-    } else if (!opts.dryRun) {
-      throw new Error(
-        !token
-          ? "No GitHub token. Set GITHUB_TOKEN (or FOREMAN_GITHUB_TOKEN), or use `foreman dry-run`."
-          : "Could not determine the GitHub repository. Set `repo: owner/name` in foreman.config.yaml.",
-      );
-    }
-  }
+  log.info(`Repository host: ${resolved.description}`);
 
   const auth = resolveAuth(config.agent.auth);
   log.info(`Claude auth: ${auth.description}`);
@@ -139,7 +196,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
   const orchestrator = new Orchestrator({
     config,
     state,
-    ...(github ? { github } : {}),
+    ...(host ? { host } : {}),
     log,
     dryRun: opts.dryRun,
     reportsDir: path.join(stateDir, "reports"),
@@ -149,7 +206,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
         config,
         state,
         git,
-        ...(github ? { github } : {}),
+        ...(host ? { host } : {}),
         agents,
         checks,
         gate,
@@ -174,5 +231,5 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
       }),
   });
 
-  return { config, state, git, ...(github ? { github } : {}), log, orchestrator, stateDir };
+  return { config, state, git, ...(host ? { host } : {}), log, orchestrator, stateDir };
 }

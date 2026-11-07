@@ -5,11 +5,11 @@ import type { AgentCall, AgentResult, AgentRunner } from "../../src/claude.js";
 import type { CheckResult, CheckRun, CheckRunner } from "../../src/checks.js";
 import { parseConfig, type ForemanConfig } from "../../src/config.js";
 import type { ChangedFile } from "../../src/git.js";
-import type { CiStatus, CreatePrInput, GitHubApi, PullRequestRef } from "../../src/github.js";
+import type { CiRef, CiStatus, CreatePrInput, PullRequestRef, RepoHost } from "../../src/host.js";
 import { permissiveGate, type DiffGate, type GitOps, type LoopDeps, silentLogger } from "../../src/loop.js";
 import type { RoleDefinition, Role } from "../../src/roles.js";
 import { StateStore } from "../../src/state.js";
-import type { IssueLike, Task } from "../../src/tasks.js";
+import type { Task } from "../../src/tasks.js";
 
 /** In-memory model of the task worktree. */
 export class World {
@@ -129,13 +129,20 @@ export function failingRun(output = "FAIL src/a.test.ts\n  expected 1 to be 2"):
 }
 export const passingRun = (): CheckRun => ({ ok: true, results: [checkResult(true)], failureOutput: "" });
 
-export class FakeGitHub implements GitHubApi {
+export class FakeHost implements RepoHost {
+  readonly kind = "github" as const;
   prs: Array<PullRequestRef & CreatePrInput> = [];
   updates: Array<{ number: number; body?: string }> = [];
-  labels: Array<{ number: number; labels: string[] }> = [];
-  comments: Array<{ number: number; body: string }> = [];
+  labels: Array<{ number: number; labels: string[]; on: "pr" | "issue" }> = [];
+  comments: Array<{ number: number; body: string; on: "pr" | "issue" }> = [];
   ci: CiStatus[] = [];
+  ciRefs: CiRef[] = [];
+  issueTasks: Task[] = [];
   existing?: PullRequestRef;
+
+  issueRef(n: number) {
+    return `Closes #${n}`;
+  }
 
   async findPrForBranch(branch: string) {
     return this.prs.filter((p) => p.head === branch).at(-1) ?? this.existing;
@@ -148,16 +155,23 @@ export class FakeGitHub implements GitHubApi {
   async updatePr(number: number, patch: { body?: string }) {
     this.updates.push({ number, ...patch });
   }
-  async addLabels(number: number, labels: string[]) {
-    this.labels.push({ number, labels });
+  async addPrLabels(number: number, labels: string[]) {
+    this.labels.push({ number, labels, on: "pr" });
   }
-  async comment(number: number, body: string) {
-    this.comments.push({ number, body });
+  async addIssueLabels(number: number, labels: string[]) {
+    this.labels.push({ number, labels, on: "issue" });
   }
-  async listLabeledIssues(): Promise<IssueLike[]> {
-    return [];
+  async commentPr(number: number, body: string) {
+    this.comments.push({ number, body, on: "pr" });
   }
-  async ciStatus(): Promise<CiStatus> {
+  async commentIssue(number: number, body: string) {
+    this.comments.push({ number, body, on: "issue" });
+  }
+  async listTaskIssues(): Promise<Task[]> {
+    return this.issueTasks;
+  }
+  async ciStatus(ref: CiRef): Promise<CiStatus> {
+    this.ciRefs.push(ref);
     return this.ci.shift() ?? { state: "success", details: "" };
   }
 }
@@ -194,7 +208,7 @@ export async function makeDeps(over: Partial<LoopDeps> & { configYaml?: string; 
     config: over.config ?? makeConfig(over.configYaml ?? ""),
     state,
     git: over.git ?? new FakeGit(world),
-    github: "github" in over ? over.github : new FakeGitHub(),
+    host: "host" in over ? over.host : new FakeHost(),
     agents: over.agents ?? new FakeAgents({ coder: () => (world.edit("src/a.ts"), {}) }),
     checks: over.checks ?? new FakeChecks(),
     gate: over.gate ?? permissiveGate,
