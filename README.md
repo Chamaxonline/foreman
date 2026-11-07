@@ -2,7 +2,7 @@
 
 **foreman** is an autonomous orchestrator for software tasks. You give it a queue
 of tasks. For each one it plans the work with Claude, implements it, runs **your**
-build/test/lint checks, and opens a GitHub pull request. It runs with no human
+build/test/lint checks, and opens a pull request on **GitHub or Azure DevOps**. It runs with no human
 confirmation, and it can keep working through the queue day and night.
 
 ```
@@ -19,13 +19,17 @@ as a PR for a human to review.
   claiming "tests pass" counts for nothing.
 - **Safety enforced in code.** Agents can't edit CI, test or lint config, or
   foreman's config. They can't delete or skip tests, reach outside the repo, or
-  see your GitHub token.
+  see your repository token.
 - **Hard limits.** Attempts, minutes and spend are capped per task, per run and
   per day.
 - **Built for unattended runs.** State persists across restarts, crashed tasks
   are requeued, API errors back off, and the run pauses when the daily budget
   is spent.
-- **Three ways to run:** locally, as a GitHub Action, or as an always-on service.
+- **Claude subscription or API key.** Run on your Pro/Max/Team plan via
+  `claude setup-token`, or on a pay-as-you-go API key. Usage limits are
+  waited out, not counted as failures.
+- **Four ways to run:** locally, as a GitHub Action, in Azure Pipelines, or as
+  an always-on service.
 
 > [!IMPORTANT]
 > foreman runs code that an AI wrote: your test suite executes it. Read the
@@ -40,6 +44,7 @@ as a PR for a human to review.
 - [Setup](#setup)
 - [Running locally](#running-locally)
 - [Running as a GitHub Action](#running-as-a-github-action)
+- [Running in Azure Pipelines](#running-in-azure-pipelines)
 - [Running on an always-on server](#running-on-an-always-on-server)
 - [Configuration reference](#configuration-reference)
 - [Tasks](#tasks)
@@ -76,7 +81,8 @@ For each pending task, highest priority first:
 8. **Ship.** The **runner** commits as `foreman[bot]`, pushes `foreman/<id>`,
    and opens a PR. The PR summary covers what changed, which checks ran, the
    attempts used and the cost.
-9. **CI** (optional). foreman waits for GitHub CI on the PR. Failures are fed
+9. **CI** (optional). foreman waits for CI on the PR (GitHub checks or Azure
+   Pipelines builds). Failures are fed
    back to the coder and a fix is pushed to the same PR, within the limits.
 10. **Limits hit.** foreman commits the work in progress (minus any safety
     violations), opens a **draft PR labeled `needs-human`** with a failure
@@ -85,7 +91,8 @@ For each pending task, highest priority first:
 
 ## Setup
 
-**Requirements:** Node.js 20+, git, and a GitHub repository.
+**Requirements:** Node.js 20+, git, and a repository on GitHub or Azure
+DevOps (Services, or Server with an explicit `azureDevOps.orgUrl`).
 
 ```bash
 cd your-repo
@@ -95,26 +102,74 @@ npx claude-foreman init     # writes foreman.config.yaml + tasks.yaml, detects y
 > The npm package is `claude-foreman`, and it installs a `foreman` command.
 > After `npm i -g claude-foreman` you can run `foreman ...` directly.
 
-### Credentials
+### Claude credential: subscription or API key
 
-| Variable | Used by | Notes |
+foreman needs one of these, chosen by `agent.auth` (or `--auth`):
+
+| Variable | Billing | How to get it |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Claude agents | Use a dedicated key with a spend limit set in the Anthropic Console. `CLAUDE_CODE_OAUTH_TOKEN` also works. |
-| `GITHUB_TOKEN` | the runner only | Pushes `foreman/*` branches and opens PRs. `FOREMAN_GITHUB_TOKEN` or `GH_TOKEN` also work. **Never passed to agents.** |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Your Claude **Pro / Max / Team / Enterprise** subscription; no extra charge | Run `claude setup-token` (Claude Code CLI). The token lasts one year. |
+| `ANTHROPIC_API_KEY` | Pay per use in the Claude Console, **separate from any subscription** | Claude Console → API keys. Use a dedicated key with a spend limit. |
 
-The GitHub token needs **Contents: write**, **Pull requests: write** and
-**Issues: write** (for labels and comments). To wait for CI it also needs
-**Checks: read**, **Commit statuses: read** and **Actions: read**. A
-fine-grained PAT scoped to the one repository, or a GitHub App installation
-token, is ideal.
+**How `agent.auth` picks one:**
+- `auto` (the default) uses the subscription token if it's set, otherwise the
+  API key, otherwise an existing `claude login` on the machine.
+- `subscription` and `api-key` force one.
+- foreman passes **only the chosen credential** to the agents. Claude Code
+  normally prefers an API key whenever one is set, so without this a stray
+  `ANTHROPIC_API_KEY` would silently bill your API account.
 
-`foreman dry-run` works without a GitHub token.
+**Things to know when using a subscription:**
+- **Usage limits apply.** Your plan has 5-hour and weekly usage windows, and
+  every task makes several Opus and Sonnet calls. When a limit is reached,
+  foreman doesn't count it as a failed attempt. The task is paused until the
+  limit resets (or for `agent.rateLimitWaitMinutes` if the reset time is
+  unknown), and `watch` sleeps until then.
+- **Spend caps become estimates.** The dollar limits and the "cost" in PRs are
+  estimated API prices, not money charged. The caps still work as a throttle.
+- **Anthropic's terms:** subscription credentials are for your own,
+  individual use. Anthropic's
+  [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance)
+  says the plan limits "assume ordinary, individual usage of Claude Code and
+  the Agent SDK". It also says products built on the Agent SDK must not route
+  other users' requests through subscription credentials. Use your own token
+  for your own repositories. For a team service, or for heavy round-the-clock
+  `watch` use, use an API key, or ask Anthropic sales whether your setup is
+  allowed.
+
+### Repository token (runner only, never passed to agents)
+
+**GitHub**
+
+| Variable | Notes |
+|---|---|
+| `GITHUB_TOKEN` | Also read from `FOREMAN_GITHUB_TOKEN` or `GH_TOKEN`. A fine-grained PAT scoped to the one repository, or a GitHub App installation token, is ideal. |
+
+The token needs **Contents: write**, **Pull requests: write** and **Issues:
+write** (for labels and comments). To wait for CI it also needs **Checks:
+read**, **Commit statuses: read** and **Actions: read**.
+
+**Azure DevOps**
+
+| Variable | Notes |
+|---|---|
+| `FOREMAN_AZURE_TOKEN` | A personal access token (PAT). Also read from `AZURE_DEVOPS_EXT_PAT` or `AZURE_DEVOPS_TOKEN`. |
+| `SYSTEM_ACCESSTOKEN` | Inside Azure Pipelines: the job token, sent as a bearer token. |
+
+The PAT needs these scopes:
+- **Code: Read & write** (push branches, pull requests)
+- **Work Items: Read & write** (only if `issues.enabled`)
+- **Build: Read** (only if `ci.wait`)
+
+For Entra ID bearer tokens in a PAT variable, set `azureDevOps.tokenType: bearer`.
+
+`foreman dry-run` works without a repository token.
 
 ## Running locally
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export GITHUB_TOKEN=$(gh auth token)
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # or: export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: export FOREMAN_AZURE_TOKEN=<PAT>
 
 foreman dry-run                      # full loop, but no push and no PRs
 foreman run                          # process all pending tasks once
@@ -134,6 +189,7 @@ foreman status                       # task states, spend today, last run
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.
+- `--auth <mode>`: `auto` | `subscription` | `api-key`. Overrides `agent.auth`.
 - `--tasks-from-remote`: read `tasks.yaml` from `origin/<base>` instead of the
   working tree.
 - `--keep-worktrees`: keep task worktrees for debugging.
@@ -181,7 +237,7 @@ jobs:
       - run: npm ci                       # whatever your checks need
       - uses: OWNER/foreman@v0            # pin a commit SHA in production
         with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # or anthropic-api-key
           github-token: ${{ secrets.FOREMAN_GITHUB_TOKEN || github.token }}
           task: ${{ inputs.task }}
 ```
@@ -192,7 +248,9 @@ jobs:
 |---|---|---|
 | `command` | `run` | `run` or `dry-run` |
 | `task` / `retry` | | Run one task, optionally resetting it first |
-| `anthropic-api-key` | (required) | Passed to the agents |
+| `claude-oauth-token` | | Claude subscription token from `claude setup-token`. Provide this or `anthropic-api-key`. |
+| `anthropic-api-key` | | Anthropic API key, billed per use. Provide this or `claude-oauth-token`. |
+| `claude-auth` | `auto` | `auto` \| `subscription` \| `api-key` |
 | `github-token` | `github.token` | Used by the runner only |
 | `version` | (this action's source) | Install `claude-foreman@<version>` from npm instead |
 | `cache-state` | `true` | Persist `.foreman/state.json` with `actions/cache`, so attempt counts and daily spend survive between runs |
@@ -211,6 +269,58 @@ Notes:
   tests execute agent-written code.
 - **Lost state:** if the cache is evicted, foreman reconciles with GitHub. A
   task that already has an open or merged PR on `foreman/<id>` is not redone.
+
+## Running in Azure Pipelines
+
+foreman detects an Azure Repos remote automatically (`dev.azure.com` or
+`*.visualstudio.com`); set `provider: azure-devops` explicitly for Azure
+DevOps Server. A ready-to-use pipeline is in
+[`examples/azure-devops/foreman-pipeline.yml`](examples/azure-devops/foreman-pipeline.yml):
+
+```yaml
+trigger: none
+schedules:
+  - cron: "17 */3 * * *"
+    branches: { include: [main] }
+    always: true
+
+variables:
+  - group: foreman   # holds CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY as secrets
+
+lockBehavior: sequential   # one foreman at a time
+
+pool: { vmImage: ubuntu-latest }
+jobs:
+  - job: foreman
+    timeoutInMinutes: 300
+    steps:
+      - checkout: self
+        fetchDepth: 0
+        persistCredentials: false      # agents must never see a token
+      - task: UseNode@1
+        inputs: { version: "22.x" }
+      - script: npm ci                 # whatever your checks need
+      - script: npx --yes claude-foreman@0 run
+        env:
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)   # runner-only push/PR token
+          CLAUDE_CODE_OAUTH_TOKEN: $(CLAUDE_CODE_OAUTH_TOKEN)
+          ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+```
+
+Setup:
+1. Create a variable group named `foreman` (Pipelines → Library) with
+   `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` as a secret, and link it.
+2. Grant the build identity (`<Project> Build Service (<org>)`) **Contribute**,
+   **Create branch** and **Contribute to pull requests** on the repository
+   (Project Settings → Repositories → Security). Grant **Edit work items in
+   this node** too if `issues.enabled` is set.
+3. Enable **"Allow scripts to access the OAuth token"** for the pipeline, so
+   `$(System.AccessToken)` is populated.
+4. Create the pipeline from the YAML file above.
+
+PRs foreman opens go through your normal branch policies, so `ci.wait: true`
+works without extra setup. The example pipeline also caches `.foreman/state.json`
+between runs and publishes the run report as a build artifact.
 
 ## Running on an always-on server
 
@@ -243,7 +353,13 @@ Prefer a dedicated user, a container or a VM; see the [safety model](#safety-mod
 except `checks` is optional.
 
 ```yaml
-repo: your-org/your-repo        # default: parsed from the `origin` remote
+provider: auto                  # auto | github | azure-devops; auto detects it from the remote URL
+repo: your-org/your-repo        # GitHub only; default: parsed from the `origin` remote
+azureDevOps:                    # Azure DevOps only; default: parsed from the `origin` remote
+  orgUrl: https://dev.azure.com/your-org   # set for Azure DevOps Server, or an unusual remote
+  project: your-project
+  repository: your-repo
+  tokenType: auto                # auto | pat | bearer
 baseBranch: main
 remote: origin
 tasksFile: tasks.yaml
@@ -274,9 +390,11 @@ limits:
 review:   { enabled: true, maxRounds: 1 }
 ci:       { wait: false, timeoutMinutes: 30, pollSeconds: 30 }
 pr:       { labels: [foreman], needsHumanLabel: needs-human, draft: false }
-issues:   { enabled: false, label: foreman }   # also take tasks from labeled issues
+issues:   { enabled: false, label: foreman }   # also take tasks from labeled issues / tagged work items
 watch:    { pollSeconds: 300 }
 agent:
+  auth: auto                    # auto | subscription | api-key; see Claude credential above
+  rateLimitWaitMinutes: 30      # pause after a usage limit when the reset time is unknown
   allowBash: true               # coder may run the check commands (and read-only git), nothing else
   extraAllowedCommands: []      # extra command prefixes, e.g. "npx tsc --noEmit"
   sandbox: true                 # Claude Code's OS-level Bash sandbox, where supported
@@ -312,13 +430,21 @@ tasks:
     model: opus               # optional coder model override
 ```
 
-**From GitHub issues:** with `issues.enabled: true`, each open issue carrying
-the label becomes task `issue-<number>`:
-- The issue body is the description.
-- A `## Acceptance criteria` section becomes the acceptance list.
-- Labels like `priority:high` and `model:opus` set the priority and model.
-- The PR says `Closes #<n>`.
-- If a task fails before any commit, the failure report is posted on the issue.
+**From GitHub issues or Azure work items:** with `issues.enabled: true`, each
+open issue (or work item) carrying the label/tag becomes a task:
+- **GitHub:** task id `issue-<number>`. The issue body is the description. A
+  `## Acceptance criteria` section becomes the acceptance list. Labels like
+  `priority:high` and `model:opus` set the priority and model. The PR body
+  says `Closes #<n>`.
+- **Azure DevOps:** task id `wi-<id>`. Work items tagged with `issues.label`
+  (any open state) are picked up. The description comes from
+  `System.Description` (or `Microsoft.VSTS.TCM.ReproSteps` for bugs), and
+  `Microsoft.VSTS.Common.AcceptanceCriteria` becomes the acceptance list, all
+  converted from HTML to plain text. A `priority:*` tag overrides the work
+  item's `Priority` field. The PR is linked to the work item natively and its
+  body says "Resolves work item #\<id\>".
+- If a task fails before any commit, the failure report is posted as a
+  comment on the issue / work item instead of a PR.
 
 **Task states** (shown by `foreman status`):
 
@@ -347,22 +473,23 @@ prompts.
 | No deleting or skipping tests | The diff gate rejects deleted test files, tests moved out of the suite, a net loss of test cases, added `.skip` / `.only` / `xit` / `@pytest.mark.skip` / `t.Skip` / `#[ignore]` / `@Disabled` markers, and runner flags like `--passWithNoTests`. |
 | Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Bash only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. Planner and reviewer are read-only. |
 | The repo can't loosen the rules | `settingSources: []`, so the target repo's `.claude/` settings and hooks are ignored. |
-| No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Anthropic key. |
+| No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, Azure DevOps tokens (`AZURE_DEVOPS_*`, `SYSTEM_ACCESSTOKEN`), npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Claude credential. |
 
-**What the runner does with git and GitHub:**
+**What the runner does with git and the repository host:**
 
 | Rule | How it's enforced |
 |---|---|
 | Only `foreman/*` branches are pushed | Pushes use an explicit refspec. Pushing to the base branch, `main` or `master`, or with any `--force`, `+refspec`, `--mirror` or `--delete` argument throws before git runs. |
-| No merging | The GitHub client has no merge method. |
+| No merging | Neither the GitHub nor the Azure DevOps client has a merge/complete method. The plugin's Bash guard also blocks `gh pr merge` and `az repos pr update/create --status completed` / `--auto-complete`. |
 | Git hooks never run | Every git call uses `core.hooksPath=/dev/null` and `--no-verify`, so a hook planted by an agent never runs with the runner's credentials. |
-| The token stays out of the repo | Auth is injected per command as an HTTP header. It is never written to git config. |
+| The token stays out of the repo | Auth is injected per command as an HTTP header (GitHub: Basic; Azure DevOps: Basic with a PAT, or Bearer for `SYSTEM_ACCESSTOKEN`). It is never written to git config. |
 | Hard caps | Attempts, wall-clock minutes (abort signal), and spend per call, task, run and day. |
 | Dry run | `foreman dry-run` does everything except push and open PRs. |
 
 **Protected paths, always included:**
 - foreman's own files: `foreman.config.yaml`, the tasks file, `.foreman/`
-- CI config: `.github/`, GitLab, CircleCI, Buildkite, Azure, Jenkins and others
+- CI config: `.github/`, `azure-pipelines*.yml`, `.azuredevops/`, `.pipelines/`,
+  GitLab, CircleCI, Buildkite, Jenkins and others
 - git hook tooling: `.husky/`, pre-commit, lefthook
 - test runner config: vitest, jest, playwright, cypress, mocha, pytest,
   `conftest.py`, tox and others
@@ -381,8 +508,9 @@ Add your own with `protectedPaths`.
   are only as restricted as the host. Run foreman in CI, a container, or under
   a dedicated user (see the systemd unit). Don't run it on a machine holding
   secrets in files.
-- **The Anthropic key is visible to the agent process** (the agent needs it).
-  Use a dedicated key with a spend limit.
+- **The Claude credential is visible to the agent process** (the agent needs
+  it to call Claude). If you use an API key, use a dedicated one with a spend
+  limit set in the Claude Console.
 - **The diff gate is a strong heuristic, not a proof.** It can't detect a
   weakened assertion. The reviewer pass and **human review of every PR** are
   the backstop. foreman never merges.
@@ -435,7 +563,8 @@ adds it to `.git/info/exclude`.
 
 ```bash
 npm install
-npm test            # vitest: loop, safety gate, stuck detector, state, git (real temp repos), CLI, plugin hooks
+npm test            # vitest: loop, safety gate, stuck detector, state, git (real temp repos),
+                     # GitHub + Azure DevOps hosts, CLI, plugin hooks
 npm run typecheck
 npm run build
 node dist/cli.js --help
@@ -444,12 +573,14 @@ node dist/cli.js --help
 Layout:
 - `src/loop.ts`: the per-task state machine
 - `src/orchestrator.ts`: queue handling and `watch`
-- `src/claude.ts`: Agent SDK runner and tool guard wiring
+- `src/claude.ts`: Agent SDK runner, Claude auth selection and tool guard wiring
 - `src/safety.ts`: protected paths and the diff gate
-- `src/git.ts`, `src/github.ts`: the git and GitHub layer
+- `src/host.ts`: the repository-host interface (`RepoHost`)
+- `src/git.ts`: the git layer
+- `src/github.ts`, `src/azure.ts`: the GitHub and Azure DevOps host implementations
 - `src/state.ts`: persistence
 
-Tests mock Claude and GitHub. git runs for real against temporary
+Tests mock Claude and the repository host. git runs for real against temporary
 repositories.
 
 ## License

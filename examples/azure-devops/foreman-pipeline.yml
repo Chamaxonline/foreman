@@ -1,0 +1,113 @@
+# Azure Pipelines definition that runs foreman on a schedule and on demand.
+#
+# Setup (once):
+#  1. Add foreman.config.yaml and tasks.yaml to the repo (`npx claude-foreman init`).
+#  2. Create a variable group "foreman" (Pipelines > Library) with ONE secret:
+#       CLAUDE_CODE_OAUTH_TOKEN  from `claude setup-token` (Claude subscription), or
+#       ANTHROPIC_API_KEY        (billed per use)
+#     and link it to this pipeline.
+#  3. Give the build identity ("<Project> Build Service (<org>)") these permissions
+#     on the repository (Project settings > Repositories > Security):
+#       Contribute, Create branch, Contribute to pull requests
+#     and, if issues.enabled is true, "Edit work items in this node" on the area path.
+#  4. Create the pipeline from this file (it lives in the repo it works on).
+#
+# PRs foreman opens are validated by your normal branch policies / build
+# validation, so `ci.wait: true` in foreman.config.yaml works out of the box.
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "17 */3 * * *"          # every 3 hours (UTC)
+    displayName: foreman
+    branches:
+      include: [main]
+    always: true                  # run even when nothing changed: tasks may come from work items
+
+parameters:
+  - name: task
+    displayName: Only this task id (optional)
+    type: string
+    default: " "
+  - name: retry
+    displayName: Retry a finished / needs-human task
+    type: boolean
+    default: false
+  - name: dryRun
+    displayName: Dry run (no push, no PRs)
+    type: boolean
+    default: false
+  - name: auth
+    displayName: Claude credential
+    type: string
+    default: auto
+    values: [auto, subscription, api-key]
+
+variables:
+  - group: foreman
+
+# One foreman at a time; never cancel a run mid-task.
+lockBehavior: sequential
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: foreman
+    timeoutInMinutes: 300
+    steps:
+      - checkout: self
+        fetchDepth: 0
+        persistCredentials: false   # agents must never see a token; foreman injects auth itself
+
+      - task: UseNode@1
+        inputs:
+          version: "22.x"
+
+      - script: npm ci --ignore-scripts || true
+        displayName: Install dependencies needed by your checks
+
+      # Persist .foreman/state.json between runs (attempt counts, daily spend).
+      - task: Cache@2
+        displayName: Restore foreman state
+        inputs:
+          key: 'foreman-state | "$(Build.Repository.Name)" | "$(Build.BuildId)"'
+          restoreKeys: 'foreman-state | "$(Build.Repository.Name)"'
+          path: $(Pipeline.Workspace)/foreman-state
+
+      - script: |
+          mkdir -p .foreman
+          cp "$(Pipeline.Workspace)"/foreman-state/state.json* .foreman/ 2>/dev/null || true
+        displayName: Load foreman state
+
+      - script: |
+          set -e
+          cmd=run
+          [ "${{ parameters.dryRun }}" = "True" ] && cmd=dry-run
+          args=("$cmd" --auth "${{ parameters.auth }}")
+          task="$(echo '${{ parameters.task }}' | xargs)"
+          [ -n "$task" ] && args+=(--task "$task")
+          [ "${{ parameters.retry }}" = "True" ] && [ -n "$task" ] && args+=(--retry)
+          npx --yes claude-foreman@0 "${args[@]}"
+        displayName: Run foreman
+        env:
+          # Runner-only token for push/PRs (bearer). Never passed to agents.
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+          # Claude credential: whichever is defined in the variable group.
+          CLAUDE_CODE_OAUTH_TOKEN: $(CLAUDE_CODE_OAUTH_TOKEN)
+          ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+
+      - script: |
+          mkdir -p "$(Pipeline.Workspace)/foreman-state"
+          cp .foreman/state.json* "$(Pipeline.Workspace)/foreman-state/" 2>/dev/null || true
+          [ -f .foreman/reports/latest.md ] && echo "##vso[task.uploadsummary]$(pwd)/.foreman/reports/latest.md"
+          true
+        displayName: Save foreman state and report summary
+        condition: always()
+
+      - publish: .foreman/reports
+        artifact: foreman-report-$(Build.BuildId)
+        displayName: Publish run report
+        condition: always()
+        continueOnError: true

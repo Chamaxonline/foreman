@@ -1,0 +1,39 @@
+# foreman configuration for an Azure Repos repository.
+# provider is detected from the remote (dev.azure.com / *.visualstudio.com);
+# set it explicitly for Azure DevOps Server.
+provider: azure-devops
+# azureDevOps:                       # only needed for Azure DevOps Server / unusual remotes
+#   orgUrl: https://tfs.example.com/tfs/DefaultCollection
+#   project: My Project
+#   repository: web-app
+baseBranch: main
+
+checks:
+  build: dotnet build --configuration Release
+  test: dotnet test --configuration Release --no-build
+
+models:
+  planner: opus
+  coder: sonnet
+  reviewer: opus
+  escalation: opus
+
+limits:
+  maxAttemptsPerTask: 5
+  maxMinutesPerTask: 45
+  maxSpendPerRunUsd: 20
+  maxSpendPerDayUsd: 60
+
+ci:
+  wait: true            # wait for build validation on the PR and feed failures back
+
+pr:
+  labels: [foreman]     # Azure Repos PR tags
+  needsHumanLabel: needs-human
+
+issues:
+  enabled: true         # work items tagged "foreman" become tasks (wi-<id>)
+  label: foreman
+
+agent:
+  auth: auto            # CLAUDE_CODE_OAUTH_TOKEN (subscription) if set, else ANTHROPIC_API_KEY

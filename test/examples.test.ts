@@ -40,3 +40,25 @@ describe("examples/node-service", () => {
     expect(checkout.with["persist-credentials"]).toBe(false);
   });
 });
+
+describe("examples/azure-devops", () => {
+  const dir = path.resolve(import.meta.dirname, "..", "examples", "azure-devops");
+
+  it("config is valid and targets Azure DevOps", () => {
+    const cfg = parseConfig(readFileSync(path.join(dir, "foreman.config.yaml"), "utf8"));
+    expect(cfg.provider).toBe("azure-devops");
+    expect(cfg.issues.enabled).toBe(true);
+  });
+
+  it("pipeline is valid YAML, keeps credentials out of the checkout and passes the job token only to foreman", () => {
+    const p = YAML.parse(readFileSync(path.join(dir, "foreman-pipeline.yml"), "utf8"));
+    const steps = p.jobs[0].steps as Array<Record<string, any>>;
+    const checkoutStep = steps.find((s) => s.checkout);
+    expect(checkoutStep).toBeDefined();
+    expect(checkoutStep!.persistCredentials).toBe(false);
+    const run = steps.find((s) => s.displayName === "Run foreman")!;
+    expect(run.env.SYSTEM_ACCESSTOKEN).toBe("$(System.AccessToken)");
+    expect(run.script).toContain("claude-foreman");
+    expect(p.lockBehavior).toBe("sequential");
+  });
+});
