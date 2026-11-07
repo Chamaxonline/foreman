@@ -1,5 +1,5 @@
 # Runs foreman on a schedule and on demand.
-# Secrets: ANTHROPIC_API_KEY, and optionally FOREMAN_GITHUB_TOKEN (GitHub App
+# Secrets: CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY), and optionally FOREMAN_GITHUB_TOKEN (GitHub App
 # token or fine-grained PAT with contents/pull-requests/issues write) so that
 # CI runs on foreman's PRs. PRs opened with the default GITHUB_TOKEN do not
 # trigger other workflows.
@@ -51,10 +51,10 @@ jobs:
 
       - run: npm ci --ignore-scripts || true   # install deps for checks (none in this example)
 
-      - uses: OWNER/foreman@v0   # replace OWNER with where foreman is published; pin a commit SHA in production
+      - uses: Chamaxonline/foreman@v0   # pin a commit SHA in production
         with:
           command: ${{ inputs.dry-run && 'dry-run' || 'run' }}
           task: ${{ inputs.task }}
           retry: ${{ inputs.retry }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # or anthropic-api-key
           github-token: ${{ secrets.FOREMAN_GITHUB_TOKEN || github.token }}

@@ -235,7 +235,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci                       # whatever your checks need
-      - uses: OWNER/foreman@v0            # pin a commit SHA in production
+      - uses: Chamaxonline/foreman@v0            # pin a commit SHA in production
         with:
           claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # or anthropic-api-key
           github-token: ${{ secrets.FOREMAN_GITHUB_TOKEN || github.token }}
@@ -539,7 +539,7 @@ interactively:
 Install it from this repository's marketplace:
 
 ```
-/plugin marketplace add OWNER/foreman
+/plugin marketplace add Chamaxonline/foreman
 /plugin install foreman@foreman
 ```
 
