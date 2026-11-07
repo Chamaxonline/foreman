@@ -1,0 +1,33 @@
+tasks:
+  - id: mean-empty-list
+    title: Make mean() reject empty input
+    description: |
+      mean([]) currently returns NaN. It should throw a RangeError with a clear
+      message instead, because callers silently propagate NaN today.
+    acceptance:
+      - mean([]) throws a RangeError whose message mentions "empty"
+      - mean() of a non-empty list behaves exactly as before
+      - A test covers the empty-list case
+    files: [src/math.js, test/math.test.js]
+    priority: high
+
+  - id: add-median
+    title: Add median()
+    description: |
+      Export a median(values) function from src/math.js. Do not mutate the
+      input array.
+    acceptance:
+      - median([3, 1, 2]) === 2
+      - median([4, 1, 3, 2]) === 2.5
+      - median throws a RangeError on an empty list
+      - The input array is not mutated
+      - Tests cover odd, even, empty and non-mutation cases
+    files: [src/math.js, test/math.test.js]
+
+  - id: readme
+    title: Document the math module
+    description: Add a README.md describing sum, mean and median with one example each.
+    acceptance:
+      - README.md exists and documents every exported function
+    priority: low
+    model: haiku   # cheap model is fine for docs

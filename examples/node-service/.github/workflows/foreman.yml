@@ -1,0 +1,60 @@
+# Runs foreman on a schedule and on demand.
+# Secrets: ANTHROPIC_API_KEY, and optionally FOREMAN_GITHUB_TOKEN (GitHub App
+# token or fine-grained PAT with contents/pull-requests/issues write) so that
+# CI runs on foreman's PRs. PRs opened with the default GITHUB_TOKEN do not
+# trigger other workflows.
+name: foreman
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"   # every 3 hours
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Only run this task id (optional)
+        required: false
+      retry:
+        description: Retry a finished / needs-human task
+        type: boolean
+        default: false
+      dry-run:
+        description: Dry run (no push, no PRs)
+        type: boolean
+        default: false
+
+# One foreman at a time per repository; never cancel a run mid-task.
+concurrency:
+  group: foreman
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # push foreman/* branches
+  pull-requests: write   # open PRs
+  issues: write          # labels, comments on issues
+  checks: read           # CI status
+  statuses: read
+  actions: read          # failed job logs
+
+jobs:
+  foreman:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # agents must never see a token
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci --ignore-scripts || true   # install deps for checks (none in this example)
+
+      - uses: OWNER/foreman@v0   # replace OWNER with where foreman is published; pin a commit SHA in production
+        with:
+          command: ${{ inputs.dry-run && 'dry-run' || 'run' }}
+          task: ${{ inputs.task }}
+          retry: ${{ inputs.retry }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.FOREMAN_GITHUB_TOKEN || github.token }}

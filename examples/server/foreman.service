@@ -1,0 +1,40 @@
+# systemd unit for running `foreman watch` on an always-on Linux server.
+#
+#   sudo useradd --system --create-home foreman
+#   sudo -u foreman git clone https://github.com/your-org/your-repo /srv/foreman/your-repo
+#   sudo install -m 600 -o foreman foreman.env /etc/foreman/your-repo.env
+#   sudo cp foreman.service /etc/systemd/system/foreman@.service
+#   sudo systemctl enable --now foreman@your-repo
+#
+# /etc/foreman/your-repo.env:
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   FOREMAN_GITHUB_TOKEN=github_pat_...
+[Unit]
+Description=foreman task runner for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=foreman
+WorkingDirectory=/srv/foreman/%i
+EnvironmentFile=/etc/foreman/%i.env
+ExecStart=/usr/bin/npx --yes claude-foreman@0 watch --tasks-from-remote
+# First SIGTERM: finish the current task, then exit.
+KillSignal=SIGTERM
+TimeoutStopSec=3600
+Restart=always
+RestartSec=60
+
+# Hardening: the runner and its agents only need the checkout and their home.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/foreman/%i /home/foreman
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

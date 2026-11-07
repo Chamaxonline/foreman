@@ -1,0 +1,14 @@
+{
+  "name": "foreman-example-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tiny example target repository for foreman",
+  "scripts": {
+    "lint": "node scripts/lint.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

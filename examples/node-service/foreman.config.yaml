@@ -1,0 +1,46 @@
+# foreman configuration for the example service.
+baseBranch: main
+tasksFile: tasks.yaml
+
+# Run by the foreman runner (not the agent) after every coding attempt.
+# scripts/lint.js is automatically protected because a check runs it via npm;
+# package.json "scripts" are protected by the diff gate.
+checks:
+  lint: npm run lint
+  test: npm test
+
+models:
+  planner: opus
+  coder: sonnet
+  reviewer: opus
+  escalation: opus
+
+limits:
+  maxAttemptsPerTask: 5
+  escalateAfterFailures: 2
+  stuckThreshold: 3
+  maxMinutesPerTask: 30
+  maxSpendPerTaskUsd: 5
+  maxSpendPerRunUsd: 15
+  maxSpendPerDayUsd: 40
+
+review:
+  enabled: true
+
+ci:
+  wait: true            # needs a token whose PRs trigger workflows (App token / PAT)
+  timeoutMinutes: 20
+
+pr:
+  labels: [foreman, automated]
+
+issues:
+  enabled: true         # also pick up open issues labeled "foreman"
+  label: foreman
+
+watch:
+  pollSeconds: 600
+
+# These files are protected because the check commands use them
+protectedPaths:
+  - scripts/**
