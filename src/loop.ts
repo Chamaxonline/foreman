@@ -36,6 +36,10 @@ export interface GitOps {
   headSha(dir: string): Promise<string>;
   commitsAhead(dir: string, baseSha: string): Promise<number>;
   push(dir: string, branch: string): Promise<void>;
+  /** File content at a commit (undefined if absent). */
+  readFileAt(dir: string, ref: string, path: string): Promise<string | undefined>;
+  /** Current working-tree file content (undefined if absent). */
+  readWorkingFile(dir: string, path: string): Promise<string | undefined>;
 }
 
 export interface GateViolation {
@@ -48,9 +52,14 @@ export interface GateResult {
   violations: GateViolation[];
 }
 
+export interface FileReader {
+  before(path: string): Promise<string | undefined>;
+  after(path: string): Promise<string | undefined>;
+}
+
 /** Inspects the agent's diff before anything is committed. */
 export interface DiffGate {
-  inspect(changes: ChangedFile[], diff: string): GateResult;
+  inspect(changes: ChangedFile[], diff: string, reader?: FileReader): GateResult | Promise<GateResult>;
 }
 
 export const permissiveGate: DiffGate = { inspect: () => ({ ok: true, violations: [] }) };
@@ -313,7 +322,7 @@ export class TaskRunner {
         continue;
       }
       const diff = await d.git.stagedDiff(ctx.dir, ctx.baseSha);
-      const gate = d.gate.inspect(changes, diff);
+      const gate = await d.gate.inspect(changes, diff, this.reader(ctx));
       if (!gate.ok) {
         await d.git.restorePaths(ctx.dir, ctx.baseSha, uniquePaths(gate.violations));
         const text = "Safety rules violated:\n" + gate.violations.map((v) => `- ${v.path}: ${v.reason}`).join("\n");
@@ -422,6 +431,13 @@ export class TaskRunner {
   }
 
   // ---- helpers -------------------------------------------------------------
+
+  private reader(ctx: Ctx): FileReader {
+    return {
+      before: (p) => this.d.git.readFileAt(ctx.dir, ctx.baseSha, p),
+      after: (p) => this.d.git.readWorkingFile(ctx.dir, p),
+    };
+  }
 
   private async callAgent(
     ctx: Ctx,
@@ -561,7 +577,7 @@ export class TaskRunner {
 
     let changes = await d.git.stagedChanges(ctx.dir, ctx.baseSha);
     if (changes.length) {
-      const gate = d.gate.inspect(changes, await d.git.stagedDiff(ctx.dir, ctx.baseSha));
+      const gate = await d.gate.inspect(changes, await d.git.stagedDiff(ctx.dir, ctx.baseSha), this.reader(ctx));
       if (!gate.ok) await d.git.restorePaths(ctx.dir, ctx.baseSha, uniquePaths(gate.violations));
       await d.git.stagedChanges(ctx.dir, ctx.baseSha); // re-stage after restore
       if (await d.git.hasStagedChanges(ctx.dir)) {

@@ -73,6 +73,12 @@ export class FakeGit implements GitOps {
     if (!branch.startsWith("foreman/")) throw new Error("bad push");
     this.w.pushes.push(branch);
   }
+  async readFileAt() {
+    return undefined;
+  }
+  async readWorkingFile() {
+    return undefined;
+  }
 }
 
 export type AgentScript = (call: AgentCall, n: number) => Partial<AgentResult> | Promise<Partial<AgentResult>>;

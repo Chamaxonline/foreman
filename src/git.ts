@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { execFile, type ExecResult } from "./exec.js";
 
@@ -72,7 +72,7 @@ export class Git {
     input?: string,
   ): Promise<ExecResult> {
     const nullHooks = process.platform === "win32" ? "NUL" : "/dev/null";
-    const full = ["-c", `core.hooksPath=${nullHooks}`, ...extraConfig, ...args];
+    const full = ["-c", `core.hooksPath=${nullHooks}`, "-c", "core.quotePath=false", ...extraConfig, ...args];
     return execFile("git", full, {
       cwd,
       env: { ...(this.opts.env ?? process.env), GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
@@ -198,6 +198,19 @@ export class Git {
       throw new GitError(`git commit failed (${res.code}): ${res.stderr.trim() || res.stdout.trim()}`, res);
     }
     return this.headSha(dir);
+  }
+
+  async readFileAt(dir: string, ref: string, file: string): Promise<string | undefined> {
+    const res = await this.run(["show", `${ref}:${file}`], dir);
+    return res.code === 0 ? res.stdout : undefined;
+  }
+
+  async readWorkingFile(dir: string, file: string): Promise<string | undefined> {
+    try {
+      return await readFile(path.join(dir, file), "utf8");
+    } catch {
+      return undefined;
+    }
   }
 
   async commitsAhead(dir: string, baseSha: string): Promise<number> {
