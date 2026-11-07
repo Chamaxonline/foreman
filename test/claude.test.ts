@@ -1,3 +1,4 @@
+import { symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -85,6 +86,28 @@ describe("tool guard", () => {
     expect(relInside(root, "src/a.ts")).toBe("src/a.ts");
     expect(relInside(root, ".")).toBe(".");
     expect(relInside(root, "src/../../x")).toBeUndefined();
+  });
+
+  it("relInside resolves correctly when the root itself is reached through a symlink", async () => {
+    // Regression test: on macOS /tmp is a symlink to /private/tmp, and
+    // Windows temp paths can resolve to a different form via realpath, so an
+    // uncanonicalized root must not be compared against a canonicalized abs
+    // path. Reproduce that mismatch with a real symlink/junction instead of
+    // relying on a platform-specific filesystem quirk.
+    const real = path.join(root, "real-target");
+    const link = path.join(root, "link-to-real");
+    await mkdir(real, { recursive: true });
+    writeFileSync(path.join(real, "f.txt"), "x");
+    try {
+      symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
+    } catch (e) {
+      // Some locked-down sandboxes (and non-admin Windows without junction
+      // support) disallow symlink creation; skip rather than fail the suite.
+      console.warn(`skipping symlink regression test: ${(e as Error).message}`);
+      return;
+    }
+    expect(relInside(link, "f.txt")).toBe("f.txt");
+    expect(relInside(link, ".")).toBe(".");
   });
 });
 

@@ -139,11 +139,15 @@ function canonical(p: string): string {
 /** Repo-relative POSIX path if `p` resolves inside `root`, else undefined. */
 export function relInside(root: string, p: string): string | undefined {
   if (p.startsWith("~")) return undefined;
+  // Canonicalize root too: on macOS /tmp is a symlink to /private/tmp, and
+  // Windows temp paths can have a short (8.3) form, so an uncanonicalized
+  // root would never match a canonicalized abs even when p is inside it.
+  const canonRoot = canonical(path.resolve(root));
   // strip glob magic so a pattern like "src/**" resolves to its directory
   const literal = p.split(/[*?[{]/)[0] ?? "";
   let abs = path.resolve(root, literal || ".");
   abs = canonicalExisting(abs);
-  const rel = path.relative(root, abs);
+  const rel = path.relative(canonRoot, abs);
   if (rel === "") return ".";
   if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
   return rel.split(path.sep).join("/");
