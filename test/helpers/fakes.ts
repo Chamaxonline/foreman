@@ -9,7 +9,7 @@ import type { CiStatus, CreatePrInput, GitHubApi, PullRequestRef } from "../../s
 import { permissiveGate, type DiffGate, type GitOps, type LoopDeps, silentLogger } from "../../src/loop.js";
 import type { RoleDefinition, Role } from "../../src/roles.js";
 import { StateStore } from "../../src/state.js";
-import type { Task } from "../../src/tasks.js";
+import type { IssueLike, Task } from "../../src/tasks.js";
 
 /** In-memory model of the task worktree. */
 export class World {
@@ -154,7 +154,7 @@ export class FakeGitHub implements GitHubApi {
   async comment(number: number, body: string) {
     this.comments.push({ number, body });
   }
-  async listLabeledIssues() {
+  async listLabeledIssues(): Promise<IssueLike[]> {
     return [];
   }
   async ciStatus(): Promise<CiStatus> {
