@@ -200,6 +200,10 @@ export class Git {
     return this.headSha(dir);
   }
 
+  async commitsAhead(dir: string, baseSha: string): Promise<number> {
+    return Number((await this.must(["rev-list", "--count", `${baseSha}..HEAD`], dir)).trim());
+  }
+
   async headSha(dir: string): Promise<string> {
     return (await this.must(["rev-parse", "HEAD"], dir)).trim();
   }

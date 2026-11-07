@@ -17,6 +17,8 @@ export interface AttemptRecord {
   outcome: "pass" | "check_failed" | "rejected" | "review_changes" | "ci_failed" | "error";
   summary: string;
   costUsd: number;
+  /** Error signature for stuck detection (failures only). */
+  signature?: string;
   at: string;
 }
 
@@ -35,6 +37,12 @@ export interface TaskState {
   prUrl?: string;
   prNumber?: number;
   lastError?: string;
+  /** Set by `--retry`: skip reconciliation with existing PRs and start over. */
+  forceRetry?: boolean;
+  /** Consecutive transient errors (git/GitHub/API), for backoff in watch mode. */
+  errorCount?: number;
+  /** Do not pick this task up again before this time (backoff). */
+  notBefore?: string;
   history: AttemptRecord[];
 }
 
@@ -172,6 +180,10 @@ export class StateStore {
       attempts: 0,
       recoveries: 0,
       lastError: undefined,
+      errorCount: 0,
+      notBefore: undefined,
+      forceRetry: true,
+      history: [],
       updatedAt: this.now().toISOString(),
     });
     await this.save();

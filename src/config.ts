@@ -51,6 +51,8 @@ const limitsSchema = z
 const reviewSchema = z
   .object({
     enabled: z.boolean().default(true),
+    /** How many times the reviewer may send work back to the coder. */
+    maxRounds: z.number().int().min(0).default(1),
   })
   .prefault({});
 
