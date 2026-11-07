@@ -296,3 +296,14 @@ describe("Azure Pipelines CI status", () => {
     expect(summarizeBuilds([{ status: "notStarted" }])).toBe("pending");
   });
 });
+
+describe("unexpanded pipeline variables", () => {
+  it("treats $(VAR) placeholders and empty strings as unset", async () => {
+    const { resolveAuth } = await import("../src/claude.js");
+    const { githubToken } = await import("../src/runtime.js");
+    const env = { CLAUDE_CODE_OAUTH_TOKEN: "$(CLAUDE_CODE_OAUTH_TOKEN)", ANTHROPIC_API_KEY: "sk-real", GITHUB_TOKEN: "" };
+    expect(resolveAuth("auto", env).kind).toBe("api-key");
+    expect(azureToken({ FOREMAN_AZURE_TOKEN: "$(FOREMAN_AZURE_TOKEN)", SYSTEM_ACCESSTOKEN: "real" })?.source).toBe("SYSTEM_ACCESSTOKEN");
+    expect(githubToken(env)).toBeUndefined();
+  });
+});

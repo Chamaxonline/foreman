@@ -24,8 +24,11 @@ if (tool === "Bash") {
   if (cfg && new RegExp(`\\bgit\\s+push\\b[^\\n]*\\s(?:\\S+:)?(?:refs/heads/)?(${base}|master|main)(\\s|$)`).test(cmd)) {
     block(`pushing to the base branch is not allowed; foreman work goes through foreman/* branches and PRs.`);
   }
-  if (/\bgh\s+pr\s+merge\b|\bgit\s+merge\b[^\n]*\borigin\/(main|master)\b.*&&.*push/.test(cmd)) {
-    block("merging is not allowed; a human merges foreman PRs.");
+  if (
+    /\bgh\s+pr\s+merge\b|\bgit\s+merge\b[^\n]*\borigin\/(main|master)\b.*&&.*push/.test(cmd) ||
+    /\baz\s+repos\s+pr\s+(update|create)\b[^\n]*(--status\s+completed|--auto-complete\s+(true|yes|on))/i.test(cmd)
+  ) {
+    block("merging (or auto-completing) PRs is not allowed; a human merges foreman PRs.");
   }
   process.exit(0);
 }

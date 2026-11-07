@@ -1,5 +1,6 @@
 import { query, type Options, type SDKMessage, type HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Role } from "./roles.js";
+import { envValue } from "./env.js";
 import { makeToolGuard, toolsFor } from "./toolguard.js";
 
 export interface AgentCall {
@@ -69,8 +70,8 @@ const OAUTH_VARS = ["CLAUDE_CODE_OAUTH_TOKEN"];
  *  - auto: subscription token if present, else API key, else stored login
  */
 export function resolveAuth(mode: AuthMode, env: NodeJS.ProcessEnv = process.env): ResolvedAuth {
-  const hasOauth = OAUTH_VARS.some((k) => env[k]);
-  const hasKey = API_KEY_VARS.some((k) => env[k]);
+  const hasOauth = OAUTH_VARS.some((k) => envValue(env, k));
+  const hasKey = API_KEY_VARS.some((k) => envValue(env, k));
   const subscription = (): ResolvedAuth =>
     hasOauth
       ? { kind: "subscription", description: "Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)" }
@@ -123,7 +124,7 @@ export function agentEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const k of Object.keys(source)) {
-    const v = source[k];
+    const v = envValue(source, k);
     if (v === undefined) continue;
     const allowed = ENV_ALLOW.includes(k) || /^LC_/.test(k) || passthrough.includes(k);
     if (allowed && !ENV_DENY.test(k)) env[k] = v;

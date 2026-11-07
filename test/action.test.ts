@@ -13,7 +13,12 @@ describe("action.yml", () => {
     expect(action.runs.using).toBe("composite");
     const used = [...text.matchAll(/inputs\.([\w-]+)/g)].map((m) => m[1]!);
     for (const name of new Set(used)) expect(Object.keys(action.inputs), name).toContain(name);
-    expect(action.inputs["anthropic-api-key"].required).toBe(true);
+    // either a subscription token or an API key; the validate step enforces one is present
+    expect(action.inputs["claude-oauth-token"]).toBeDefined();
+    expect(action.inputs["anthropic-api-key"].required).toBe(false);
+    expect(text).toContain("Provide claude-oauth-token (subscription) or anthropic-api-key");
+    const run = action.runs.steps.find((s: { id?: string }) => s.id === "foreman");
+    expect(run.env.CLAUDE_CODE_OAUTH_TOKEN).toContain("inputs.claude-oauth-token");
   });
 
   it("runs the built CLI and never exposes the token to agents via GITHUB_TOKEN or git config", () => {

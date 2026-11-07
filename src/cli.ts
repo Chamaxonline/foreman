@@ -4,6 +4,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { AuthError, type AuthMode } from "./claude.js";
 import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
 import { execFile } from "./exec.js";
 import type { OutcomeStatus, RunReport } from "./report.js";
@@ -29,14 +30,18 @@ Options:
   --tasks-from-remote   Read tasks.yaml from <remote>/<baseBranch> instead of the working tree
   --keep-worktrees      Keep task worktrees in .foreman/worktrees for debugging
   --force-unlock        Take over a lock held by another foreman process
+  --auth <mode>         Claude credential: auto | subscription | api-key (overrides agent.auth)
   -v, --verbose         Print agent activity
   -h, --help            Show help
   --version             Show version
 
 Environment:
-  ANTHROPIC_API_KEY     Claude API key (passed to agents)
-  GITHUB_TOKEN          GitHub token for push/PRs (never passed to agents).
-                        FOREMAN_GITHUB_TOKEN or GH_TOKEN also work.
+  CLAUDE_CODE_OAUTH_TOKEN  Claude subscription token from 'claude setup-token' (preferred by auth=auto)
+  ANTHROPIC_API_KEY        Anthropic API key, billed per use
+  GITHUB_TOKEN             GitHub: token for push/PRs (FOREMAN_GITHUB_TOKEN, GH_TOKEN also work)
+  FOREMAN_AZURE_TOKEN      Azure DevOps: PAT for push/PRs (AZURE_DEVOPS_EXT_PAT also works;
+                           SYSTEM_ACCESSTOKEN in Azure Pipelines)
+  Repository tokens are never passed to agents.
 
 Exit codes: 0 ok (including needs-human outcomes), 1 error, 2 usage/config error.
 `;
@@ -64,6 +69,7 @@ export async function main(argv: string[]): Promise<number> {
         "tasks-from-remote": { type: "boolean" },
         "keep-worktrees": { type: "boolean" },
         "force-unlock": { type: "boolean" },
+        auth: { type: "string" },
         force: { type: "boolean" },
         json: { type: "boolean" },
         verbose: { type: "boolean", short: "v" },
@@ -112,6 +118,7 @@ export async function main(argv: string[]): Promise<number> {
           tasksFromRemote: Boolean(o["tasks-from-remote"]),
           keepWorktrees: Boolean(o["keep-worktrees"]),
           forceUnlock: Boolean(o["force-unlock"]),
+          ...(o.auth ? { auth: o.auth } : {}),
           verbose: Boolean(o.verbose),
         });
       }
@@ -120,13 +127,18 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (e) {
-    if (e instanceof ConfigError || e instanceof TasksError || e instanceof LockError) {
+    if (e instanceof ConfigError || e instanceof TasksError || e instanceof LockError || e instanceof AuthError) {
       console.error(e.message);
       return 2;
     }
     console.error(`foreman: ${(e as Error).stack ?? (e as Error).message}`);
     return 1;
   }
+}
+
+function parseAuthMode(v: string): AuthMode {
+  if (v === "auto" || v === "subscription" || v === "api-key") return v;
+  throw new ConfigError(`--auth must be auto, subscription or api-key (got "${v}")`);
 }
 
 interface RunFlags {
@@ -137,6 +149,7 @@ interface RunFlags {
   tasksFromRemote: boolean;
   keepWorktrees: boolean;
   forceUnlock: boolean;
+  auth?: string;
   verbose: boolean;
 }
 
@@ -166,6 +179,7 @@ async function cmdRun(repoDir: string, f: RunFlags): Promise<number> {
       verbose: f.verbose,
       keepWorktrees: f.keepWorktrees,
       tasksFromRemote: f.tasksFromRemote,
+      ...(f.auth ? { auth: parseAuthMode(f.auth) } : {}),
     });
     if (f.dryRun) rt.log.info("DRY RUN: nothing will be pushed and no PRs will be opened.");
     if (f.watch) {

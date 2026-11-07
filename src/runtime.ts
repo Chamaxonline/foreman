@@ -1,8 +1,9 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveAuth, SdkAgentRunner, type AgentRunner } from "./claude.js";
+import { resolveAuth, SdkAgentRunner, type AgentRunner, type AuthMode } from "./claude.js";
 import { ShellCheckRunner } from "./checks.js";
+import { envValue } from "./env.js";
 import { loadConfig, type ForemanConfig } from "./config.js";
 import { AzureDevOpsHost, azureGitAuth, azureToken, isAzureRemote, parseAzureRemote, type AzureRepoRef } from "./azure.js";
 import { Git, githubGitAuth, parseGitHubRemote, type GitHttpAuth } from "./git.js";
@@ -22,13 +23,15 @@ export interface RuntimeOptions {
   keepWorktrees?: boolean;
   /** Read tasks.yaml from the remote base branch instead of the working tree. */
   tasksFromRemote?: boolean;
+  /** Overrides agent.auth from the config. */
+  auth?: AuthMode;
   /** Injected for tests. */
   agents?: AgentRunner;
   host?: RepoHost;
 }
 
 export function githubToken(env = process.env): string | undefined {
-  return env.FOREMAN_GITHUB_TOKEN || env.GITHUB_TOKEN || env.GH_TOKEN || undefined;
+  return envValue(env, "FOREMAN_GITHUB_TOKEN") ?? envValue(env, "GITHUB_TOKEN") ?? envValue(env, "GH_TOKEN");
 }
 
 export function makeLogger(file: string | undefined, verbose = false): Logger {
@@ -169,7 +172,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
   await ensureLocalExclude(repoDir, git);
   log.info(`Repository host: ${resolved.description}`);
 
-  const auth = resolveAuth(config.agent.auth);
+  const auth = resolveAuth(opts.auth ?? config.agent.auth);
   log.info(`Claude auth: ${auth.description}`);
   if (auth.kind === "claude-login") {
     log.warn("No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY set; relying on a stored `claude login`. Run `claude setup-token` for unattended use.");

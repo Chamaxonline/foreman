@@ -22,9 +22,20 @@ inputs:
     description: Path of the target repository checkout
     required: false
     default: "."
+  claude-oauth-token:
+    description: >
+      Claude subscription token from `claude setup-token` (Pro/Max/Team/Enterprise).
+      Used instead of an API key when set. Subscription usage limits apply.
+    required: false
+    default: ""
   anthropic-api-key:
-    description: Anthropic API key (passed to Claude agents)
-    required: true
+    description: Anthropic API key (billed per use). Provide this or claude-oauth-token.
+    required: false
+    default: ""
+  claude-auth:
+    description: "auto (subscription token if set, else API key), subscription, or api-key"
+    required: false
+    default: auto
   github-token:
     description: >
       Token used by the runner (never by agents) to push foreman/* branches and open PRs.
@@ -69,8 +80,13 @@ runs:
       shell: bash
       env:
         CMD: ${{ inputs.command }}
+        HAS_OAUTH: ${{ inputs.claude-oauth-token != '' }}
+        HAS_KEY: ${{ inputs.anthropic-api-key != '' }}
       run: |
         case "$CMD" in run|dry-run) ;; *) echo "::error::command must be 'run' or 'dry-run' (got '$CMD')"; exit 2;; esac
+        if [ "$HAS_OAUTH" != "true" ] && [ "$HAS_KEY" != "true" ]; then
+          echo "::error::Provide claude-oauth-token (subscription) or anthropic-api-key"; exit 2
+        fi
 
     - name: Restore foreman state
       if: inputs.cache-state == 'true'
@@ -121,6 +137,8 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-oauth-token }}
+        CLAUDE_AUTH: ${{ inputs.claude-auth }}
         FOREMAN_GITHUB_TOKEN: ${{ inputs.github-token }}
         GITHUB_TOKEN: ""
         CLI: ${{ steps.install.outputs.cli }}
@@ -133,6 +151,7 @@ runs:
         [ -n "$TASK" ] && args+=(--task "$TASK")
         [ "$RETRY" = "true" ] && args+=(--retry)
         [ "$FROM_REMOTE" = "true" ] && args+=(--tasks-from-remote)
+        args+=(--auth "$CLAUDE_AUTH")
         set +e
         node "$CLI" "${args[@]}"
         code=$?

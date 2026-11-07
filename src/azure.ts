@@ -1,3 +1,4 @@
+import { envValue } from "./env.js";
 import { BRANCH_PREFIX, BranchSafetyError, type GitHttpAuth } from "./git.js";
 import { logTail, withRetry, type CiRef, type CiStatus, type CreatePrInput, type PullRequestRef, type RepoHost } from "./host.js";
 import { taskFromIssue, type Task } from "./tasks.js";
@@ -62,7 +63,7 @@ export function azureToken(env: NodeJS.ProcessEnv = process.env, kind: "auto" | 
     ["AZURE_DEVOPS_TOKEN", "pat"],
     ["SYSTEM_ACCESSTOKEN", "bearer"],
   ] as const) {
-    const v = env[name];
+    const v = envValue(env, name);
     if (v) return { value: v, kind: kind === "auto" ? defKind : kind, source: name };
   }
   return undefined;

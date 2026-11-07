@@ -105,7 +105,7 @@ describe("guard hook", () => {
   });
 
   it("blocks force pushes, pushes to main and merges", () => {
-    for (const command of ["git push --force origin foreman/x", "git push origin HEAD:main", "git push -f", "gh pr merge 3"]) {
+    for (const command of ["git push --force origin foreman/x", "git push origin HEAD:main", "git push -f", "gh pr merge 3", "az repos pr update --id 3 --status completed", "az repos pr create --auto-complete true"]) {
       expect(runHook("guard.mjs", { tool_name: "Bash", tool_input: { command } }).status, command).toBe(2);
     }
     expect(runHook("guard.mjs", { tool_name: "Bash", tool_input: { command: "git push origin foreman/x" } }).status).toBe(0);
