@@ -1,0 +1,13 @@
+export { main } from "./cli.js";
+export { createRuntime, type Runtime, type RuntimeOptions } from "./runtime.js";
+export { Orchestrator } from "./orchestrator.js";
+export { TaskRunner, type LoopDeps, type GitOps, type DiffGate } from "./loop.js";
+export { SdkAgentRunner, type AgentRunner, type AgentCall, type AgentResult } from "./claude.js";
+export { OctokitGitHub, type GitHubApi } from "./github.js";
+export { Git } from "./git.js";
+export { SafetyGate, makeProtectedMatcher, BUILTIN_PROTECTED } from "./safety.js";
+export { StuckDetector, errorSignature } from "./stuck.js";
+export { StateStore } from "./state.js";
+export { loadConfig, parseConfig, type ForemanConfig } from "./config.js";
+export { loadTasks, parseTasks, type Task } from "./tasks.js";
+export type { RunReport, TaskOutcome } from "./report.js";
