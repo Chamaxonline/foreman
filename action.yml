@@ -1,0 +1,161 @@
+name: foreman
+description: "Run foreman: execute queued software tasks with Claude, verify them with your checks, and open pull requests."
+author: chamathran
+branding:
+  icon: git-pull-request
+  color: orange
+
+inputs:
+  command:
+    description: "run or dry-run"
+    required: false
+    default: run
+  task:
+    description: Only run this task id
+    required: false
+    default: ""
+  retry:
+    description: With task, reset a finished / needs-human task and run it again
+    required: false
+    default: "false"
+  working-directory:
+    description: Path of the target repository checkout
+    required: false
+    default: "."
+  anthropic-api-key:
+    description: Anthropic API key (passed to Claude agents)
+    required: true
+  github-token:
+    description: >
+      Token used by the runner (never by agents) to push foreman/* branches and open PRs.
+      PRs opened with the default GITHUB_TOKEN do not trigger other workflows, so use a
+      GitHub App token or fine-grained PAT if you want CI to run on foreman PRs.
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: claude-foreman version from npm (e.g. 0.1.0). Empty = build this action's own source.
+    required: false
+    default: ""
+  node-version:
+    description: Node.js version
+    required: false
+    default: "22"
+  cache-state:
+    description: Persist .foreman/state.json between runs with actions/cache (keeps attempt counts and daily spend)
+    required: false
+    default: "true"
+  upload-report:
+    description: Upload .foreman/reports and logs as a workflow artifact
+    required: false
+    default: "true"
+  tasks-from-remote:
+    description: Read tasks.yaml from the remote base branch instead of the checkout
+    required: false
+    default: "false"
+
+outputs:
+  report:
+    description: Path to the markdown run report
+    value: ${{ steps.foreman.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Validate inputs
+      shell: bash
+      env:
+        CMD: ${{ inputs.command }}
+      run: |
+        case "$CMD" in run|dry-run) ;; *) echo "::error::command must be 'run' or 'dry-run' (got '$CMD')"; exit 2;; esac
+
+    - name: Restore foreman state
+      if: inputs.cache-state == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ${{ inputs.working-directory }}/.foreman/state.json
+          ${{ inputs.working-directory }}/.foreman/state.json.bak
+        key: foreman-state-${{ github.repository }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          foreman-state-${{ github.repository }}-
+
+    - name: Install foreman
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ -n "$VERSION" ]; then
+          dir="$RUNNER_TEMP/claude-foreman"
+          mkdir -p "$dir"
+          npm install --prefix "$dir" --no-audit --no-fund "claude-foreman@$VERSION"
+          echo "cli=$dir/node_modules/claude-foreman/dist/cli.js" >> "$GITHUB_OUTPUT"
+        else
+          cd "$ACTION_PATH"
+          npm ci --no-audit --no-fund
+          npm run build
+          echo "cli=$ACTION_PATH/dist/cli.js" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Remove persisted checkout credentials
+      # actions/checkout stores the token in .git/config by default. Agent-written
+      # code (tests run by checks) must never be able to read it; foreman injects
+      # auth only into its own fetch/push commands.
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        git config --local --unset-all http.https://github.com/.extraheader || true
+        # newer actions/checkout versions keep credentials in a separate file pulled in via includeIf
+        for key in $(git config --local --name-only --get-regexp '^includeif\.' 2>/dev/null); do
+          git config --local --unset-all "$key" || true
+        done
+
+    - name: Run foreman
+      id: foreman
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        FOREMAN_GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ""
+        CLI: ${{ steps.install.outputs.cli }}
+        CMD: ${{ inputs.command }}
+        TASK: ${{ inputs.task }}
+        RETRY: ${{ inputs.retry }}
+        FROM_REMOTE: ${{ inputs.tasks-from-remote }}
+      run: |
+        args=("$CMD")
+        [ -n "$TASK" ] && args+=(--task "$TASK")
+        [ "$RETRY" = "true" ] && args+=(--retry)
+        [ "$FROM_REMOTE" = "true" ] && args+=(--tasks-from-remote)
+        set +e
+        node "$CLI" "${args[@]}"
+        code=$?
+        set -e
+        echo "report=$(pwd)/.foreman/reports/latest.md" >> "$GITHUB_OUTPUT"
+        exit $code
+
+    - name: Save foreman state
+      if: always() && inputs.cache-state == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ${{ inputs.working-directory }}/.foreman/state.json
+          ${{ inputs.working-directory }}/.foreman/state.json.bak
+        key: foreman-state-${{ github.repository }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Upload report
+      if: always() && inputs.upload-report == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: foreman-report-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ inputs.working-directory }}/.foreman/reports/
+          ${{ inputs.working-directory }}/.foreman/logs/
+        if-no-files-found: ignore
+        retention-days: 30
