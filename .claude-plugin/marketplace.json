@@ -1,0 +1,11 @@
+{
+  "name": "foreman",
+  "owner": { "name": "chamathran" },
+  "plugins": [
+    {
+      "name": "foreman",
+      "source": "./plugin",
+      "description": "Planner/coder/reviewer subagents, /foreman command, and hooks that protect check config and run the project's checks."
+    }
+  ]
+}
