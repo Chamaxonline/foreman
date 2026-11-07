@@ -92,6 +92,13 @@ const agentSchema = z
     allowBash: z.boolean().default(true),
     /** Extra command prefixes the coder may run via Bash (e.g. "npx tsc --noEmit"). */
     extraAllowedCommands: z.array(z.string()).default([]),
+    /** Use Claude Code's OS-level Bash sandbox where the platform supports it. */
+    sandbox: z.boolean().default(true),
+    /**
+     * Extra environment variables passed to agents (e.g. for Bedrock/Vertex).
+     * GitHub/npm tokens and deploy credentials are always stripped.
+     */
+    envPassthrough: z.array(z.string()).default([]),
   })
   .prefault({});
 
