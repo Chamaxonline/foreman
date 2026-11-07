@@ -99,6 +99,14 @@ export class TransientError extends Error {
   override name = "TransientError";
 }
 
+/** Claude usage limit reached (subscription window or API 429). Pause until it resets. */
+export class RateLimitError extends Error {
+  override name = "RateLimitError";
+  constructor(readonly resetsAt?: number) {
+    super(`Claude usage limit reached${resetsAt ? ` (resets ${new Date(resetsAt).toISOString()})` : ""}`);
+  }
+}
+
 const FINISHED = new Set(["done", "needs_human", "failed"]);
 
 export function backoffMs(errorCount: number): number {
@@ -191,6 +199,13 @@ export class TaskRunner {
     } catch (e) {
       const err = e as Error;
       tlog(`[error] ${err.stack ?? err.message}`);
+      if (err instanceof RateLimitError) {
+        const resume = err.resetsAt ?? this.now() + d.config.agent.rateLimitWaitMinutes * 60_000;
+        const resumeAt = new Date(resume + 30_000).toISOString();
+        d.log.warn(`  ⏸ ${err.message}; ${task.id} stays pending until ${resumeAt}`);
+        await d.state.updateTask(task.id, { status: "pending", lastError: err.message, notBefore: resumeAt });
+        return this.outcome(task, "deferred", started, models, { reason: err.message, resumeAt });
+      }
       if (err instanceof BranchSafetyError) {
         d.log.error(`✖ ${task.id}: safety violation in runner: ${err.message}`);
         await d.state.updateTask(task.id, { status: "failed", lastError: err.message, finishedAt: new Date(this.now()).toISOString() });
@@ -231,6 +246,7 @@ export class TaskRunner {
         maxBudgetUsd: b.remainingUsd,
       });
       if (ctx.signal.aborted) return this.stopForLimit(ctx, "time");
+      if (r.subtype === "rate_limited") throw new RateLimitError(r.resetsAt);
       if (r.ok) ctx.plan = r.text;
       else if (r.subtype === "exception") throw new TransientError(`planner failed: ${r.error}`);
       else if (r.subtype === "error_max_budget_usd") return this.stopForLimit(ctx, ctx.budget.status(task.id).binding);
@@ -297,6 +313,11 @@ export class TaskRunner {
       };
 
       if (!r.ok) {
+        if (r.subtype === "rate_limited") {
+          // Usage limit: not the agent's fault. Give the attempt back and pause.
+          await d.state.updateTask(task.id, { attempts: n - 1 });
+          throw new RateLimitError(r.resetsAt);
+        }
         if (r.subtype === "exception") {
           // API/network failure: not the agent's fault. Give the attempt back and retry later.
           await d.state.updateTask(task.id, { attempts: n - 1 });
@@ -357,6 +378,7 @@ export class TaskRunner {
         );
         if (ctx.signal.aborted) return this.stopForLimit(ctx, "time");
         review = rr.ok ? parseReview(rr.structured, rr.text) : undefined;
+        // (a usage limit during review also lands here: checks passed, so ship rather than lose the work)
         if (!review) d.log.warn(`  reviewer gave no usable verdict (${rr.subtype}); proceeding on passing checks`);
         if (review?.verdict === "request_changes" && reviewRounds < cfg.review.maxRounds) {
           reviewRounds++;

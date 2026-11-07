@@ -30,6 +30,8 @@ export interface TaskOutcome {
   summary?: string;
   /** The PR body foreman opened (or would have opened, in dry-run). */
   prBody?: string;
+  /** For deferred outcomes: earliest time to try again (ISO), e.g. when a usage limit resets. */
+  resumeAt?: string;
 }
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
@@ -90,7 +92,7 @@ export function successPrBody(i: PrBodyInput): string {
     "## Run stats",
     `- Attempts: ${i.attempts}`,
     `- Models: ${[...new Set(i.models)].map((m) => `\`${m}\``).join(", ")}`,
-    `- Cost: ${usd(i.costUsd)}`,
+    `- Cost (estimated): ${usd(i.costUsd)}`,
     `- Duration: ${mins(i.durationMs)}`,
     "",
     "<details><summary>Attempt history</summary>",
@@ -136,7 +138,7 @@ export function failureReport(i: FailureReportInput): string {
     ...(i.plan ? ["<details><summary>Plan</summary>", "", i.plan.trim(), "", "</details>", ""] : []),
     "## Run stats",
     `- Attempts: ${i.attempts}`,
-    `- Cost: ${usd(i.costUsd)}`,
+    `- Cost (estimated): ${usd(i.costUsd)}`,
     `- Duration: ${mins(i.durationMs)}`,
     "",
     "---",

@@ -32,11 +32,69 @@ export interface AgentResult {
   costUsd: number;
   sessionId?: string;
   turns: number;
-  /** SDK result subtype, e.g. success, error_max_turns, error_max_budget_usd. */
+  /**
+   * SDK result subtype, e.g. success, error_max_turns, error_max_budget_usd,
+   * plus foreman's own: "rate_limited" (subscription usage limit), "exception", "aborted".
+   */
   subtype: string;
   error?: string;
   deniedToolCalls: number;
+  /** When subtype is "rate_limited": epoch ms when the limit resets, if known. */
+  resetsAt?: number;
 }
+
+// ---- Claude authentication ---------------------------------------------------
+
+export type AuthMode = "auto" | "subscription" | "api-key";
+
+export interface ResolvedAuth {
+  /** subscription: CLAUDE_CODE_OAUTH_TOKEN; api-key: ANTHROPIC_API_KEY/AUTH_TOKEN; claude-login: stored `claude login` credentials. */
+  kind: "subscription" | "api-key" | "claude-login";
+  description: string;
+}
+
+export class AuthError extends Error {
+  override name = "AuthError";
+}
+
+const API_KEY_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+const OAUTH_VARS = ["CLAUDE_CODE_OAUTH_TOKEN"];
+
+/**
+ * Decide which Claude credential agents use. Claude Code itself prefers an API
+ * key over a subscription token when both are set; foreman makes the choice
+ * explicit and strips the other credential from the agent environment.
+ *  - subscription: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), else a stored `claude login`
+ *  - api-key: ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN)
+ *  - auto: subscription token if present, else API key, else stored login
+ */
+export function resolveAuth(mode: AuthMode, env: NodeJS.ProcessEnv = process.env): ResolvedAuth {
+  const hasOauth = OAUTH_VARS.some((k) => env[k]);
+  const hasKey = API_KEY_VARS.some((k) => env[k]);
+  const subscription = (): ResolvedAuth =>
+    hasOauth
+      ? { kind: "subscription", description: "Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)" }
+      : { kind: "claude-login", description: "stored `claude login` credentials (no CLAUDE_CODE_OAUTH_TOKEN set)" };
+  switch (mode) {
+    case "subscription":
+      return subscription();
+    case "api-key":
+      if (!hasKey) throw new AuthError("agent.auth is api-key but ANTHROPIC_API_KEY is not set.");
+      return { kind: "api-key", description: "Anthropic API key (ANTHROPIC_API_KEY, billed per use)" };
+    case "auto":
+      if (hasOauth) return subscription();
+      if (hasKey) return { kind: "api-key", description: "Anthropic API key (ANTHROPIC_API_KEY, billed per use)" };
+      return subscription();
+  }
+}
+
+/** Convert an SDK resetsAt (seconds or ms since epoch) to ms. */
+export function resetsAtMs(v: number | undefined): number | undefined {
+  if (v === undefined || !Number.isFinite(v) || v <= 0) return undefined;
+  return v < 1e12 ? v * 1000 : v;
+}
+
+const RATE_LIMIT_TEXT = /usage limit|rate limit|limit reached|resets? (?:at|in)|429|too many requests/i;
 
 /** The runner talks to Claude only through this interface (mocked in tests). */
 export interface AgentRunner {
@@ -55,11 +113,13 @@ const ENV_ALLOW = [
 ];
 
 /** Env var names that are never passed to agents, even if listed in passthrough. */
-const ENV_DENY = /^(GITHUB_TOKEN|GH_TOKEN|GH_ENTERPRISE_TOKEN|FOREMAN_GITHUB_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|ACTIONS_.*|AWS_SECRET.*|AWS_SESSION_TOKEN|.*_DEPLOY_.*)$/i;
+const ENV_DENY =
+  /^(GITHUB_TOKEN|GH_TOKEN|GH_ENTERPRISE_TOKEN|FOREMAN_GITHUB_TOKEN|FOREMAN_AZURE_TOKEN|AZURE_DEVOPS_.*|AZURE_CLIENT_SECRET|AZURE_.*TOKEN.*|SYSTEM_ACCESSTOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|ACTIONS_.*|AWS_SECRET.*|AWS_SESSION_TOKEN|.*_DEPLOY_.*)$/i;
 
 export function agentEnv(
   source: NodeJS.ProcessEnv = process.env,
   passthrough: string[] = [],
+  auth?: ResolvedAuth,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const k of Object.keys(source)) {
@@ -68,6 +128,9 @@ export function agentEnv(
     const allowed = ENV_ALLOW.includes(k) || /^LC_/.test(k) || passthrough.includes(k);
     if (allowed && !ENV_DENY.test(k)) env[k] = v;
   }
+  // Pass only the chosen Claude credential, so Claude Code cannot silently prefer another one.
+  if (auth?.kind === "subscription" || auth?.kind === "claude-login") for (const k of API_KEY_VARS) delete env[k];
+  if (auth?.kind === "api-key") for (const k of OAUTH_VARS) delete env[k];
   env.CLAUDE_AGENT_SDK_CLIENT_APP = "claude-foreman";
   env.FOREMAN_AGENT = "1";
   env.CI = env.CI ?? "1"; // non-interactive tools (no watch mode, no prompts)
@@ -76,6 +139,8 @@ export function agentEnv(
 
 export interface SdkAgentRunnerOptions {
   envPassthrough?: string[];
+  /** Which Claude credential agents use (see resolveAuth). */
+  auth?: ResolvedAuth;
   /** Enable Claude Code's OS-level sandbox for Bash when supported. */
   sandbox?: boolean;
   /** Injected for tests. */
@@ -131,7 +196,7 @@ export class SdkAgentRunner implements AgentRunner {
       maxTurns: call.maxTurns,
       maxBudgetUsd: Math.max(0.01, call.maxBudgetUsd),
       abortController: abort,
-      env: agentEnv(process.env, this.opts.envPassthrough),
+      env: agentEnv(process.env, this.opts.envPassthrough, this.opts.auth),
       ...(this.opts.sandbox
         ? { sandbox: { enabled: true, failIfUnavailable: false, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false } }
         : {}),
@@ -141,10 +206,11 @@ export class SdkAgentRunner implements AgentRunner {
 
     const result: AgentResult = { ok: false, text: "", costUsd: 0, turns: 0, subtype: "unknown", deniedToolCalls: 0 };
     let lastAssistantText = "";
+    const limit: RateLimitSeen = { hit: false };
     try {
       const q = (this.opts.queryFn ?? query)({ prompt: call.prompt, options });
       for await (const msg of q) {
-        handleMessage(msg, result, call.onEvent, (t) => (lastAssistantText = t));
+        handleMessage(msg, result, call.onEvent, (t) => (lastAssistantText = t), limit);
       }
     } catch (e) {
       // The SDK throws after yielding an error result; keep what we captured.
@@ -157,8 +223,26 @@ export class SdkAgentRunner implements AgentRunner {
     }
     if (!result.text) result.text = lastAssistantText;
     result.deniedToolCalls = denied;
+    // Subscription usage limit (or API 429): not the agent's fault; the runner waits it out.
+    if (!result.ok && result.subtype !== "aborted" && (limit.hit || RATE_LIMIT_TEXT.test(`${result.error ?? ""} ${result.text}`))) {
+      result.subtype = "rate_limited";
+      const resets = limit.resetsAt ?? parseResetFromText(`${result.error ?? ""} ${result.text}`);
+      if (resets !== undefined) result.resetsAt = resets;
+      call.onEvent?.(`[rate-limit] usage limit reached${resets ? `; resets at ${new Date(resets).toISOString()}` : ""}`);
+    }
     return result;
   }
+}
+
+interface RateLimitSeen {
+  hit: boolean;
+  resetsAt?: number;
+}
+
+/** Claude Code reports e.g. "Claude AI usage limit reached|1767225600". */
+function parseResetFromText(s: string): number | undefined {
+  const m = s.match(/limit reached\|(\d{9,13})/i);
+  return m ? resetsAtMs(Number(m[1])) : undefined;
 }
 
 function handleMessage(
@@ -166,8 +250,20 @@ function handleMessage(
   out: AgentResult,
   onEvent: ((l: string) => void) | undefined,
   setText: (t: string) => void,
+  limit: RateLimitSeen = { hit: false },
 ): void {
   switch (msg.type) {
+    case "rate_limit_event": {
+      const info = msg.rate_limit_info;
+      if (info.status === "rejected") {
+        limit.hit = true;
+        const r = resetsAtMs(info.resetsAt);
+        if (r !== undefined) limit.resetsAt = r;
+      } else if (info.status === "allowed_warning") {
+        onEvent?.(`[rate-limit] warning: ${info.rateLimitType ?? "usage"} at ${Math.round((info.utilization ?? 0) * 100)}%`);
+      }
+      break;
+    }
     case "system":
       if (msg.subtype === "init") {
         out.sessionId = msg.session_id;
@@ -175,6 +271,7 @@ function handleMessage(
       }
       break;
     case "assistant": {
+      if (msg.error === "rate_limit") limit.hit = true;
       const blocks = msg.message.content as Array<{ type: string; text?: string; name?: string; input?: unknown }>;
       const texts: string[] = [];
       for (const b of blocks) {

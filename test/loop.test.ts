@@ -43,7 +43,7 @@ describe("TaskRunner: happy path", () => {
     expect(gh.prs[0]!.body).toContain("Checks run");
     expect(gh.prs[0]!.body).toContain("npm test");
     expect(gh.prs[0]!.body).toMatch(/Attempts: 1/);
-    expect(gh.prs[0]!.body).toMatch(/Cost: \$0\.30/);
+    expect(gh.prs[0]!.body).toMatch(/Cost \(estimated\): \$0\.30/);
 
     const st = state.get("t1")!;
     expect(st.status).toBe("done");
@@ -382,5 +382,26 @@ describe("TaskRunner: infrastructure errors", () => {
     expect(made.state.get("t1")!.status).toBe("pending");
     const reopened = await StateStore.open(made.dir);
     expect(reopened.get("t1")!.status).toBe("pending");
+  });
+});
+
+describe("TaskRunner: Claude usage limits", () => {
+  it("gives the attempt back and defers until the limit resets", async () => {
+    const resetsAt = Date.parse("2026-01-01T05:00:00Z");
+    const agents = new FakeAgents({ coder: () => ({ ok: false, subtype: "rate_limited", resetsAt }) });
+    const made = await makeDeps({ agents, now: () => Date.parse("2026-01-01T00:00:00Z") });
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out.status).toBe("deferred");
+    expect(out.resumeAt).toBe("2026-01-01T05:00:30.000Z");
+    const st = made.state.get("t1")!;
+    expect(st).toMatchObject({ status: "pending", attempts: 0, notBefore: "2026-01-01T05:00:30.000Z" });
+    expect(st.history).toEqual([]);
+  });
+
+  it("uses rateLimitWaitMinutes when the reset time is unknown (planner hit the limit)", async () => {
+    const agents = new FakeAgents({ planner: () => ({ ok: false, subtype: "rate_limited" }) });
+    const made = await makeDeps({ agents, configYaml: "agent: { rateLimitWaitMinutes: 10 }", now: () => Date.parse("2026-01-01T00:00:00Z") });
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out).toMatchObject({ status: "deferred", resumeAt: "2026-01-01T00:10:30.000Z" });
   });
 });

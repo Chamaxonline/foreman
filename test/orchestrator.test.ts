@@ -169,3 +169,22 @@ describe("Orchestrator.watch", () => {
     expect(sleeps).toEqual([60_000, 120_000]);
   });
 });
+
+describe("Orchestrator.watch with usage limits", () => {
+  it("sleeps until the Claude usage limit resets", async () => {
+    const ctl = new AbortController();
+    let cycles = 0;
+    const { orch, sleeps } = await setup({
+      exec: async (t) => outcome(t, "deferred", { reason: "Claude usage limit reached", resumeAt: "2026-05-01T12:00:00.000Z" }),
+    });
+    await orch.watch(ctl.signal, { onCycle: () => (++cycles === 1 ? ctl.abort() : undefined) });
+    expect(sleeps).toEqual([]); // aborted before sleeping
+    const ctl2 = new AbortController();
+    let c2 = 0;
+    const s2 = await setup({
+      exec: async (t) => outcome(t, "deferred", { reason: "limit", resumeAt: "2026-05-01T12:00:00.000Z" }),
+    });
+    await s2.orch.watch(ctl2.signal, { onCycle: () => (++c2 === 2 ? ctl2.abort() : undefined) });
+    expect(s2.sleeps[0]).toBe(2 * 3600_000); // 10:00 → 12:00
+  });
+});

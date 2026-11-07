@@ -215,3 +215,72 @@ describe("SdkAgentRunner (with a fake query)", () => {
     expect(r).toMatchObject({ ok: false, subtype: "exception", error: "overloaded", costUsd: 0 });
   });
 });
+
+describe("Claude auth", () => {
+  const both = { CLAUDE_CODE_OAUTH_TOKEN: "oat", ANTHROPIC_API_KEY: "sk", PATH: "/bin" };
+
+  it("auto prefers the subscription token, then the API key, then a stored login", async () => {
+    const { resolveAuth } = await import("../src/claude.js");
+    expect(resolveAuth("auto", both).kind).toBe("subscription");
+    expect(resolveAuth("auto", { ANTHROPIC_API_KEY: "sk" }).kind).toBe("api-key");
+    expect(resolveAuth("auto", {}).kind).toBe("claude-login");
+    expect(resolveAuth("subscription", { ANTHROPIC_API_KEY: "sk" }).kind).toBe("claude-login");
+    expect(resolveAuth("api-key", both).kind).toBe("api-key");
+    expect(() => resolveAuth("api-key", { CLAUDE_CODE_OAUTH_TOKEN: "oat" })).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it("passes only the chosen credential to agents", async () => {
+    const { resolveAuth } = await import("../src/claude.js");
+    const sub = agentEnv(both, [], resolveAuth("subscription", both));
+    expect(sub.CLAUDE_CODE_OAUTH_TOKEN).toBe("oat");
+    expect(sub.ANTHROPIC_API_KEY).toBeUndefined();
+    const key = agentEnv(both, [], resolveAuth("api-key", both));
+    expect(key.ANTHROPIC_API_KEY).toBe("sk");
+    expect(key.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it("never passes Azure DevOps credentials", () => {
+    const env = agentEnv(
+      { PATH: "/bin", SYSTEM_ACCESSTOKEN: "x", AZURE_DEVOPS_EXT_PAT: "y", FOREMAN_AZURE_TOKEN: "z" },
+      ["SYSTEM_ACCESSTOKEN", "AZURE_DEVOPS_EXT_PAT"],
+    );
+    expect(Object.keys(env)).not.toEqual(expect.arrayContaining(["SYSTEM_ACCESSTOKEN"]));
+    expect(env.AZURE_DEVOPS_EXT_PAT).toBeUndefined();
+    expect(env.FOREMAN_AZURE_TOKEN).toBeUndefined();
+  });
+});
+
+describe("rate limits", () => {
+  const base = (): AgentCall => ({
+    role: "coder", model: "sonnet", systemPrompt: "", prompt: "", cwd: root, readOnly: false, allowBash: false,
+    allowedCommands: [], isProtected: () => false, maxTurns: 1, maxBudgetUsd: 1, signal: new AbortController().signal,
+  });
+
+  it("detects a rejected rate_limit_event and reports when it resets", async () => {
+    const fakeQuery: any = () =>
+      (async function* (): AsyncGenerator<SDKMessage> {
+        yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1767225600, rateLimitType: "five_hour" } } as any;
+        yield { type: "result", subtype: "error_during_execution", is_error: true, errors: ["limit"], total_cost_usd: 0, num_turns: 0, session_id: "s" } as any;
+      })();
+    const r = await new SdkAgentRunner({ queryFn: fakeQuery }).run(base());
+    expect(r.subtype).toBe("rate_limited");
+    expect(r.resetsAt).toBe(1767225600_000);
+  });
+
+  it("recognizes the usage-limit result text", async () => {
+    const fakeQuery: any = () =>
+      (async function* (): AsyncGenerator<SDKMessage> {
+        yield { type: "result", subtype: "success", is_error: true, result: "Claude AI usage limit reached|1767229200", total_cost_usd: 0, num_turns: 1, session_id: "s" } as any;
+      })();
+    const r = await new SdkAgentRunner({ queryFn: fakeQuery }).run(base());
+    expect(r).toMatchObject({ subtype: "rate_limited", resetsAt: 1767229200_000 });
+  });
+
+  it("does not flag normal failures", async () => {
+    const fakeQuery: any = () =>
+      (async function* (): AsyncGenerator<SDKMessage> {
+        yield { type: "result", subtype: "error_max_turns", is_error: true, errors: [], total_cost_usd: 0, num_turns: 1, session_id: "s" } as any;
+      })();
+    expect((await new SdkAgentRunner({ queryFn: fakeQuery }).run(base())).subtype).toBe("error_max_turns");
+  });
+});

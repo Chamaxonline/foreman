@@ -88,6 +88,15 @@ const watchSchema = z
 const agentSchema = z
   .object({
     /**
+     * Which Claude credential agents use:
+     *  - auto (default): CLAUDE_CODE_OAUTH_TOKEN if set, else ANTHROPIC_API_KEY, else stored `claude login`
+     *  - subscription: Claude Pro/Max/Team/Enterprise via CLAUDE_CODE_OAUTH_TOKEN (or `claude login`)
+     *  - api-key: ANTHROPIC_API_KEY, billed per use in the Claude Console
+     */
+    auth: z.enum(["auto", "subscription", "api-key"]).default("auto"),
+    /** Minutes to wait after a usage limit when the reset time is unknown. */
+    rateLimitWaitMinutes: z.number().positive().default(30),
+    /**
      * Allow the coder to run Bash commands. Even when enabled, Bash is limited to
      * the configured check commands plus read-only git and file listing commands.
      */

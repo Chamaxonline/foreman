@@ -162,6 +162,12 @@ export class Orchestrator {
           d.log.warn(`Daily spend cap reached ($${d.state.spentToday().toFixed(2)}). Pausing until ${resume.toISOString()}.`);
         } else {
           waitMs = Math.min(pollMs, this.untilNextBackoff() ?? pollMs);
+          // Claude usage limit: everything would hit it, so wait for the reset.
+          const resumes = report.tasks.flatMap((t) => (t.resumeAt ? [Date.parse(t.resumeAt)] : []));
+          if (resumes.length) {
+            waitMs = Math.max(1000, Math.max(...resumes) - this.now());
+            d.log.warn(`Claude usage limit reached. Pausing until ${new Date(Math.max(...resumes)).toISOString()}.`);
+          }
         }
       } catch (e) {
         errors++;

@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { SdkAgentRunner, type AgentRunner } from "./claude.js";
+import { resolveAuth, SdkAgentRunner, type AgentRunner } from "./claude.js";
 import { ShellCheckRunner } from "./checks.js";
 import { loadConfig, type ForemanConfig } from "./config.js";
 import { Git, parseGitHubRemote } from "./git.js";
@@ -112,14 +112,17 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
     }
   }
 
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.CLAUDE_CODE_OAUTH_TOKEN && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    log.warn("ANTHROPIC_API_KEY is not set; Claude calls will fail unless Claude Code is otherwise authenticated.");
+  const auth = resolveAuth(config.agent.auth);
+  log.info(`Claude auth: ${auth.description}`);
+  if (auth.kind === "claude-login") {
+    log.warn("No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY set; relying on a stored `claude login`. Run `claude setup-token` for unattended use.");
   }
 
   const roles = await loadRoles();
   const isProtected = makeProtectedMatcher(config);
   const agents =
-    opts.agents ?? new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox });
+    opts.agents ??
+    new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox, auth });
   const checks = new ShellCheckRunner(config.checks, config.limits.checkTimeoutMinutes, config.agent.envPassthrough);
   const gate = new SafetyGate(isProtected);
   const tasksPath = path.join(repoDir, config.tasksFile);

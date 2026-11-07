@@ -103,6 +103,10 @@ watch:
   pollSeconds: 300
 
 agent:
+  # auto: CLAUDE_CODE_OAUTH_TOKEN (subscription, from \`claude setup-token\`) if set,
+  #       else ANTHROPIC_API_KEY (billed per use). Or force: subscription | api-key
+  auth: auto
+  rateLimitWaitMinutes: 30   # pause after a usage limit when the reset time is unknown
   allowBash: true      # coder may run the check commands above (nothing else)
   sandbox: true
   extraAllowedCommands: []
