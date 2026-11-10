@@ -11,5 +11,6 @@ export { SafetyGate, makeProtectedMatcher, BUILTIN_PROTECTED } from "./safety.js
 export { StuckDetector, errorSignature } from "./stuck.js";
 export { StateStore } from "./state.js";
 export { loadConfig, parseConfig, type ForemanConfig } from "./config.js";
-export { loadTasks, parseTasks, type Task } from "./tasks.js";
+export { extractAcceptanceSection, loadTasks, parseTasks, titleFromPrompt, type Task } from "./tasks.js";
+export { parseStoryDoc, parseStoryGap, type ParsedStory, type StoryGapVerdict } from "./prompts.js";
 export type { RunReport, TaskOutcome } from "./report.js";

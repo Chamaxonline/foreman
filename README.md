@@ -375,6 +375,7 @@ models:                         # aliases (opus, sonnet, haiku) or full model ID
   coder: sonnet
   reviewer: opus
   escalation: opus              # coder model after repeated failures
+  analyst: opus                 # writes/updates story docs (see docs.enabled below)
 
 limits:
   maxAttemptsPerTask: 5
@@ -399,6 +400,7 @@ agent:
   extraAllowedCommands: []      # extra command prefixes, e.g. "npx tsc --noEmit"
   sandbox: true                 # Claude Code's OS-level Bash sandbox, where supported
   envPassthrough: []            # extra env vars for agents (e.g. Bedrock/Vertex config)
+docs:     { enabled: false, dir: docs/stories }   # see Story docs, under Tasks
 protectedPaths: []              # extra globs agents may never modify
 dayBoundary: utc                # utc | local; when the daily cap resets
 ```
@@ -429,6 +431,38 @@ tasks:
     priority: high            # critical | high | medium | low, or a number (higher runs first)
     model: opus               # optional coder model override
 ```
+
+### Story docs: giving a task as just a prompt
+
+A task can also be given as a bare ask, with no title or acceptance list
+written out:
+
+```yaml
+tasks:
+  - id: faster-login
+    prompt: The login page feels slow on mobile. Make it noticeably faster.
+```
+
+Set `docs.enabled: true` in `foreman.config.yaml` to have foreman keep a
+formal spec in sync with that ask, before any planning happens:
+
+- **No story doc yet** (checked at `docs/<id>.md`, under `docs.dir`): a new
+  **analyst** agent writes one — title, a short description, and a concrete,
+  testable acceptance list — then the planner and coder work from it.
+- **A story doc already exists:** the analyst (read-only) checks whether its
+  acceptance criteria cover everything the new prompt asks for. If something
+  is missing, it updates the doc to add it. **Existing content is never
+  rewritten or removed** — only added to.
+- Either way, the doc's title/description/acceptance become what the
+  planner, coder, reviewer and PR use — overriding whatever `title`,
+  `description` or `acceptance` the task entry itself had, if any.
+- The doc change rides in the same commit and PR as the code change.
+- The analyst **may only write inside `docs.dir`** — nothing else, enforced
+  the same way protected paths are.
+
+This also means you can re-run the same task id with a different `prompt`
+later (or point a fresh task at the same ask) and foreman will extend the
+existing spec rather than starting over or duplicating it.
 
 **From GitHub issues or Azure work items:** with `issues.enabled: true`, each
 open issue (or work item) carrying the label/tag becomes a task:
@@ -472,6 +506,7 @@ prompts.
 | No edits to protected paths | The same hook denies the write. The diff gate rejects the change before commit and reverts it. |
 | No deleting or skipping tests | The diff gate rejects deleted test files, tests moved out of the suite, a net loss of test cases, added `.skip` / `.only` / `xit` / `@pytest.mark.skip` / `t.Skip` / `#[ignore]` / `@Disabled` markers, and runner flags like `--passWithNoTests`. |
 | Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Bash only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. Planner and reviewer are read-only. |
+| A role can be scoped to one folder | The analyst (story docs) has no Bash and can only write inside `docs.dir`; writes anywhere else are denied the same way protected paths are, regardless of whether that path is otherwise protected. |
 | The repo can't loosen the rules | `settingSources: []`, so the target repo's `.claude/` settings and hooks are ignored. |
 | No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, Azure DevOps tokens (`AZURE_DEVOPS_*`, `SYSTEM_ACCESSTOKEN`), npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Claude credential. |
 
@@ -523,9 +558,11 @@ Add your own with `protectedPaths`.
 [`plugin/`](plugin) is a Claude Code plugin for working foreman tasks
 interactively:
 
-- **Subagents** `planner` (opus, read-only), `coder` (sonnet) and `reviewer`
-  (opus, read-only). The runner uses these same files as its role prompts, so
-  editing them changes both.
+- **Subagents** `planner` (opus, read-only), `coder` (sonnet), `reviewer`
+  (opus, read-only) and `analyst` (opus; writes/updates story docs — see
+  [Story docs](#story-docs-giving-a-task-as-just-a-prompt), write access
+  limited to the docs folder). The runner uses these same files as its role
+  prompts, so editing them changes both.
 - **`/foreman <task-id | description>`**: plan, implement, run the checks and
   review, without committing or pushing.
 - **Hooks:**

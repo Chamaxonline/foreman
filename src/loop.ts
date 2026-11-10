@@ -9,10 +9,16 @@ import {
   coderPrompt,
   escalationPrompt,
   parseReview,
+  parseStoryDoc,
+  parseStoryGap,
   plannerPrompt,
   REVIEW_SCHEMA,
   retryPrompt,
   reviewerPrompt,
+  STORY_GAP_SCHEMA,
+  storyGapCheckPrompt,
+  storyUpdatePrompt,
+  storyWritePrompt,
   type FeedbackKind,
   type ReviewVerdict,
 } from "./prompts.js";
@@ -237,6 +243,14 @@ export class TaskRunner {
     const wt = await d.git.createWorktree(task.id);
     const ctx: Ctx = { ...base, task, dir: wt.dir, baseSha: wt.baseSha, plan: "", lastChecks: [], lastError: "" };
 
+    // ---- 0. story doc (optional) -----------------------------------------------
+    if (cfg.docs.enabled) {
+      const r = await this.ensureStory(ctx, task);
+      if ("outcome" in r) return r.outcome;
+      task = r.task;
+      ctx.task = task;
+    }
+
     // ---- 1. plan --------------------------------------------------------------
     {
       const b = ctx.budget.status(task.id);
@@ -456,6 +470,85 @@ export class TaskRunner {
 
   // ---- helpers -------------------------------------------------------------
 
+  /**
+   * Ensures a story doc exists for a task given as a free-text prompt, and
+   * that it covers the prompt's requirements, before any planning happens.
+   *  - No doc yet: the analyst writes one.
+   *  - Doc exists: the analyst checks coverage (read-only); if something is
+   *    missing, it updates the doc to add it. Existing content is kept.
+   * Returns the task enriched with the doc's title/description/acceptance
+   * (original fields are kept if the doc didn't yield them), or a signal to
+   * stop the task here (a budget cap was hit).
+   */
+  private async ensureStory(ctx: Ctx, task: Task): Promise<{ task: Task } | { outcome: TaskOutcome }> {
+    const d = this.d;
+    const cfg = d.config;
+    const docPath = `${cfg.docs.dir}/${task.id}.md`;
+    const promptText = (task.prompt ?? task.description ?? task.title).trim();
+    if (!promptText) return { task };
+
+    const existing = await d.git.readWorkingFile(ctx.dir, docPath);
+    let content: string | undefined;
+
+    if (!existing) {
+      const b = ctx.budget.status(task.id);
+      if (b.exceeded) return { outcome: await this.stopForLimit(ctx, b.exceeded) };
+      const r = await this.callAgent(ctx, "analyst", cfg.models.analyst, storyWritePrompt(task, promptText, docPath), {
+        readOnly: false,
+        maxBudgetUsd: b.remainingUsd,
+        writeScope: [cfg.docs.dir],
+      });
+      if (ctx.signal.aborted) return { outcome: await this.stopForLimit(ctx, "time") };
+      if (r.subtype === "rate_limited") throw new RateLimitError(r.resetsAt);
+      if (r.subtype === "exception") throw new TransientError(`analyst failed: ${r.error}`);
+      content = await d.git.readWorkingFile(ctx.dir, docPath);
+      d.log.info(content ? `  ✎ wrote ${docPath}` : `  analyst did not create ${docPath}; continuing with the task as given`);
+    } else {
+      const b = ctx.budget.status(task.id);
+      if (b.exceeded) return { outcome: await this.stopForLimit(ctx, b.exceeded) };
+      const r = await this.callAgent(ctx, "analyst", cfg.models.analyst, storyGapCheckPrompt(existing, promptText, docPath), {
+        readOnly: true,
+        maxBudgetUsd: b.remainingUsd,
+        outputSchema: STORY_GAP_SCHEMA as unknown as Record<string, unknown>,
+      });
+      if (ctx.signal.aborted) return { outcome: await this.stopForLimit(ctx, "time") };
+      if (r.subtype === "rate_limited") throw new RateLimitError(r.resetsAt);
+      if (r.subtype === "exception") throw new TransientError(`analyst failed: ${r.error}`);
+      const gap = r.ok ? parseStoryGap(r.structured, r.text) : undefined;
+      if (gap && !gap.covered && gap.missing.length) {
+        d.log.info(`  ↺ ${docPath} is missing: ${gap.missing.join("; ")}`);
+        const b2 = ctx.budget.status(task.id);
+        if (b2.exceeded) return { outcome: await this.stopForLimit(ctx, b2.exceeded) };
+        const r2 = await this.callAgent(
+          ctx,
+          "analyst",
+          cfg.models.analyst,
+          storyUpdatePrompt(existing, gap.missing, promptText, docPath),
+          { readOnly: false, maxBudgetUsd: b2.remainingUsd, writeScope: [cfg.docs.dir] },
+        );
+        if (ctx.signal.aborted) return { outcome: await this.stopForLimit(ctx, "time") };
+        if (r2.subtype === "rate_limited") throw new RateLimitError(r2.resetsAt);
+        if (r2.subtype === "exception") throw new TransientError(`analyst failed: ${r2.error}`);
+        content = await d.git.readWorkingFile(ctx.dir, docPath);
+        d.log.info(content ? `  ✎ updated ${docPath}` : `  analyst did not update ${docPath}; using it as-is`);
+      } else {
+        d.log.info(`  ✓ ${docPath} already covers the request`);
+      }
+      content ??= existing;
+    }
+
+    if (!content) return { task };
+    const parsed = parseStoryDoc(content);
+    return {
+      task: {
+        ...task,
+        title: parsed.title || task.title,
+        description: parsed.description || task.description,
+        acceptance: parsed.acceptance.length ? parsed.acceptance : task.acceptance,
+      },
+    };
+  }
+
   private reader(ctx: Ctx): FileReader {
     return {
       before: (p) => this.d.git.readFileAt(ctx.dir, ctx.baseSha, p),
@@ -468,7 +561,8 @@ export class TaskRunner {
     role: Role,
     model: string,
     prompt: string,
-    extra: Pick<AgentCall, "readOnly" | "maxBudgetUsd"> & Partial<Pick<AgentCall, "resumeSessionId" | "outputSchema">>,
+    extra: Pick<AgentCall, "readOnly" | "maxBudgetUsd"> &
+      Partial<Pick<AgentCall, "resumeSessionId" | "outputSchema" | "writeScope">>,
   ): Promise<AgentResult> {
     const d = this.d;
     ctx.models.push(model);
@@ -479,7 +573,8 @@ export class TaskRunner {
       systemPrompt: d.roles[role].prompt,
       prompt,
       cwd: ctx.dir,
-      allowBash: d.config.agent.allowBash,
+      // The analyst only ever edits a docs file; it never needs Bash.
+      allowBash: role === "analyst" ? false : d.config.agent.allowBash,
       allowedCommands: role === "coder" ? [...d.config.checks.map((c) => c.run), ...d.config.agent.extraAllowedCommands] : [],
       isProtected: d.isProtected,
       maxTurns: d.config.limits.maxTurnsPerCall,

@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-export type Role = "planner" | "coder" | "reviewer";
-export const ROLES: Role[] = ["planner", "coder", "reviewer"];
+export type Role = "planner" | "coder" | "reviewer" | "analyst";
+export const ROLES: Role[] = ["planner", "coder", "reviewer", "analyst"];
 
 export interface RoleDefinition {
   name: Role;
@@ -48,6 +48,6 @@ export async function loadRole(role: Role, dir = path.join(pluginDir(), "agents"
 }
 
 export async function loadRoles(dir?: string): Promise<Record<Role, RoleDefinition>> {
-  const [planner, coder, reviewer] = await Promise.all(ROLES.map((r) => loadRole(r, dir)));
-  return { planner: planner!, coder: coder!, reviewer: reviewer! };
+  const defs = await Promise.all(ROLES.map((r) => loadRole(r, dir)));
+  return Object.fromEntries(defs.map((d) => [d.name, d])) as Record<Role, RoleDefinition>;
 }

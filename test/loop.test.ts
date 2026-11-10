@@ -405,3 +405,130 @@ describe("TaskRunner: Claude usage limits", () => {
     expect(out).toMatchObject({ status: "deferred", resumeAt: "2026-01-01T00:10:30.000Z" });
   });
 });
+
+describe("TaskRunner: story docs (docs.enabled)", () => {
+  it("is a no-op by default (docs.enabled: false) \u2014 regression check", async () => {
+    const made = await makeDeps();
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "do the thing" }));
+    expect(out.status).toBe("done");
+    expect((made.deps.agents as FakeAgents).byRole("analyst")).toHaveLength(0);
+  });
+
+  it("writes a new story doc when none exists, and uses it for planning and coding", async () => {
+    let world!: World;
+    const docPath = "docs/stories/t1.md";
+    const agents = new FakeAgents({
+      analyst: () => {
+        world.write(docPath, "# Fancy Title\n\nSome context.\n\n## Acceptance criteria\n- crit A\n- crit B\n");
+        return {};
+      },
+      coder: () => (world.edit("src/a.ts"), {}),
+    });
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true }" });
+    world = made.world;
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "add the fancy thing" }));
+
+    expect(out.status).toBe("done");
+    const analystCalls = agents.byRole("analyst");
+    expect(analystCalls).toHaveLength(1);
+    expect(analystCalls[0]).toMatchObject({ readOnly: false, writeScope: ["docs/stories"] });
+    expect(analystCalls[0]!.prompt).toContain("add the fancy thing");
+    expect(analystCalls[0]!.prompt).toContain(docPath);
+
+    const plannerPrompt = agents.byRole("planner")[0]!.prompt;
+    expect(plannerPrompt).toContain("Fancy Title");
+    expect(plannerPrompt).toContain("crit A");
+    expect(plannerPrompt).toContain("crit B");
+    expect(out.title).toBe("Fancy Title");
+  });
+
+  it("checks an existing story and proceeds without writing when it already covers the ask", async () => {
+    let world!: World;
+    const docPath = "docs/stories/t1.md";
+    const existing = "# Existing Title\n\nOld context.\n\n## Acceptance criteria\n- old crit\n";
+    const agents = new FakeAgents({
+      analyst: () => ({ structured: { covered: true, missing: [] } }),
+      coder: () => (world.edit("src/a.ts"), {}),
+    });
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true }" });
+    world = made.world;
+    world.seed(docPath, existing);
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "add something" }));
+
+    expect(out.status).toBe("done");
+    const analystCalls = agents.byRole("analyst");
+    expect(analystCalls).toHaveLength(1);
+    expect(analystCalls[0]).toMatchObject({ readOnly: true });
+    expect(analystCalls[0]!.writeScope).toBeUndefined();
+    expect(analystCalls[0]!.prompt).toContain("old crit");
+
+    const plannerPrompt = agents.byRole("planner")[0]!.prompt;
+    expect(plannerPrompt).toContain("old crit");
+    expect(out.title).toBe("Existing Title");
+    // the doc was only read, never written this attempt
+    expect(world.changes.some((c) => c.path === docPath)).toBe(false);
+  });
+
+  it("updates an existing story when something is missing, keeping existing content", async () => {
+    let world!: World;
+    const docPath = "docs/stories/t1.md";
+    const existing = "# Existing Title\n\nOld context.\n\n## Acceptance criteria\n- old crit\n";
+    const updated = "# Existing Title\n\nOld context.\n\n## Acceptance criteria\n- old crit\n- new crit\n";
+    const agents = new FakeAgents({
+      analyst: (_call, n) =>
+        n === 1
+          ? { structured: { covered: false, missing: ["needs new crit"] } }
+          : (world.write(docPath, updated), {}),
+      coder: () => (world.edit("src/a.ts"), {}),
+    });
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true }" });
+    world = made.world;
+    world.seed(docPath, existing);
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "add something new" }));
+
+    expect(out.status).toBe("done");
+    const analystCalls = agents.byRole("analyst");
+    expect(analystCalls).toHaveLength(2);
+    expect(analystCalls[0]).toMatchObject({ readOnly: true });
+    expect(analystCalls[1]).toMatchObject({ readOnly: false, writeScope: ["docs/stories"] });
+    expect(analystCalls[1]!.prompt).toContain("needs new crit");
+    expect(analystCalls[1]!.prompt).toContain("Keep everything already in the file");
+
+    expect(out.title).toBe("Existing Title");
+    const plannerPrompt = agents.byRole("planner")[0]!.prompt;
+    expect(plannerPrompt).toContain("old crit");
+    expect(plannerPrompt).toContain("new crit");
+  });
+
+  it("uses a custom docs.dir", async () => {
+    let world!: World;
+    const docPath = "notes/stories/t1.md";
+    const agents = new FakeAgents({
+      analyst: () => (world.write(docPath, "# T\n\n## Acceptance criteria\n- a\n"), {}),
+      coder: () => (world.edit("src/a.ts"), {}),
+    });
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true, dir: notes/stories }" });
+    world = made.world;
+    await new TaskRunner(made.deps).runTask(makeTask({ prompt: "x" }));
+    expect(agents.byRole("analyst")[0]).toMatchObject({ writeScope: ["notes/stories"] });
+  });
+
+  it("defers (without calling the analyst) when the run spend cap is already exhausted", async () => {
+    const agents = new FakeAgents();
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true }\nlimits: { maxSpendPerRunUsd: 0.01 }" });
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "x" }));
+    expect(out.status).toBe("deferred");
+    expect(agents.byRole("analyst")).toHaveLength(0);
+    expect(made.state.get("t1")!.status).toBe("pending");
+  });
+
+  it("a usage limit while writing the story defers until it resets, without spending an attempt", async () => {
+    const resetsAt = Date.parse("2026-01-01T05:00:00Z");
+    const agents = new FakeAgents({ analyst: () => ({ ok: false, subtype: "rate_limited", resetsAt }) });
+    const made = await makeDeps({ agents, configYaml: "docs: { enabled: true }", now: () => Date.parse("2026-01-01T00:00:00Z") });
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ prompt: "x" }));
+    expect(out.status).toBe("deferred");
+    expect(out.resumeAt).toBe("2026-01-01T05:00:30.000Z");
+    expect(made.state.get("t1")).toMatchObject({ status: "pending", attempts: 0 });
+  });
+});

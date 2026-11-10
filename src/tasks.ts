@@ -24,6 +24,12 @@ const stringList = z
   .transform((v) => (Array.isArray(v) ? v : v.split("\n").map((s) => s.trim()).filter(Boolean)))
   .transform((v) => v.map((s) => s.replace(/^[-*]\s+/, "")));
 
+/** First line of a free-text prompt, truncated, used as a title when none is given. */
+export function titleFromPrompt(prompt: string): string {
+  const line = prompt.trim().split(/\r?\n/)[0] ?? "";
+  return line.length > 80 ? line.slice(0, 79) + "…" : line;
+}
+
 export const taskSchema = z
   .object({
     id: z
@@ -32,8 +38,15 @@ export const taskSchema = z
       .refine((s) => TASK_ID_RE.test(s) && !s.includes(".."), {
         message: "id must be 1-64 chars of letters, digits, '.', '_' or '-' (no '..')",
       }),
-    title: z.string().min(1),
+    title: z.string().min(1).optional(),
     description: z.string().default(""),
+    /**
+     * A free-text ask in place of a fully written-out title/description/
+     * acceptance list. With `docs.enabled`, foreman turns this into (or
+     * reconciles it against) a story file under the configured docs
+     * directory, and uses that doc's content for planning and coding.
+     */
+    prompt: z.string().min(1).optional(),
     acceptance: stringList.optional(),
     acceptance_criteria: stringList.optional(),
     /** Coder model override for this task. */
@@ -42,8 +55,14 @@ export const taskSchema = z
     files: stringList.optional(),
     priority: prioritySchema,
   })
-  .transform(({ acceptance, acceptance_criteria, files, ...t }) => ({
+  .refine((t) => Boolean(t.title?.trim() || t.prompt?.trim()), {
+    message: "task must have a title or a prompt",
+    path: ["title"],
+  })
+  .transform(({ acceptance, acceptance_criteria, files, title, prompt, ...t }) => ({
     ...t,
+    title: title?.trim() || titleFromPrompt(prompt!),
+    ...(prompt ? { prompt: prompt.trim() } : {}),
     acceptance: acceptance ?? acceptance_criteria ?? [],
     files: files ?? [],
     source: "file" as TaskSource,
@@ -55,6 +74,8 @@ export interface Task {
   id: string;
   title: string;
   description: string;
+  /** Free-text ask this task was given, if it was given one instead of a full spec. */
+  prompt?: string;
   acceptance: string[];
   model?: string;
   files: string[];
@@ -135,12 +156,12 @@ export interface IssueLike {
 }
 
 /**
- * Turn a GitHub issue into a task. The issue body is the description; a
- * markdown section headed "Acceptance criteria" (any level) becomes the
- * acceptance list. Labels `priority:high` etc. set priority.
+ * Pull a bulleted/numbered list out of a markdown section headed
+ * "Acceptance" or "Acceptance criteria" (any heading level). Shared by
+ * `taskFromIssue` and story-doc parsing so both recognize the same shape.
  */
-export function taskFromIssue(issue: IssueLike): Task {
-  const body = (issue.body ?? "").replace(/\r\n/g, "\n");
+export function extractAcceptanceSection(markdown: string): string[] {
+  const body = markdown.replace(/\r\n/g, "\n");
   const acceptance: string[] = [];
   const m = body.match(/^#{1,6}\s*acceptance(?:\s+criteria)?\s*\n([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))/im);
   if (m?.[1]) {
@@ -149,6 +170,17 @@ export function taskFromIssue(issue: IssueLike): Task {
       if (item?.[1]) acceptance.push(item[1].trim());
     }
   }
+  return acceptance;
+}
+
+/**
+ * Turn a GitHub issue into a task. The issue body is the description; a
+ * markdown section headed "Acceptance criteria" (any level) becomes the
+ * acceptance list. Labels `priority:high` etc. set priority.
+ */
+export function taskFromIssue(issue: IssueLike): Task {
+  const body = (issue.body ?? "").replace(/\r\n/g, "\n");
+  const acceptance = extractAcceptanceSection(body);
   const labelNames = issue.labels.map((l) => (typeof l === "string" ? l : (l.name ?? "")));
   let priority = 0;
   for (const l of labelNames) {

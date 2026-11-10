@@ -1,4 +1,4 @@
-import type { Task } from "./tasks.js";
+import { extractAcceptanceSection, type Task } from "./tasks.js";
 
 function taskBlock(task: Task): string {
   const lines = [`# Task ${task.id}: ${task.title}`, ""];
@@ -155,4 +155,119 @@ export function parseReview(structured: unknown, text: string): ReviewVerdict | 
     }
   }
   return undefined;
+}
+
+// ---- story docs ---------------------------------------------------------
+
+/** Build the prompt body shared by all three analyst calls. */
+function askBlock(task: Task, promptText: string, docPath: string): string {
+  const lines = [`# Request for task ${task.id}`, "", promptText.trim(), ""];
+  if (task.files.length) {
+    lines.push("## Files / areas to look at first", ...task.files.map((f) => `- ${f}`), "");
+  }
+  lines.push(`Story file: \`${docPath}\``);
+  return lines.join("\n");
+}
+
+export function storyWritePrompt(task: Task, promptText: string, docPath: string): string {
+  return [askBlock(task, promptText, docPath), "", `This story does not exist yet. Write it to \`${docPath}\` now.`].join(
+    "\n",
+  );
+}
+
+export function storyGapCheckPrompt(existingDoc: string, promptText: string, docPath: string): string {
+  return [
+    `# New ask for ${docPath}`,
+    "",
+    promptText.trim(),
+    "",
+    `## Current contents of ${docPath}`,
+    "```markdown",
+    existingDoc.trim(),
+    "```",
+    "",
+    "Does the story's acceptance criteria already cover everything the new ask requires?",
+    "Do not edit the file. Return your verdict.",
+  ].join("\n");
+}
+
+export function storyUpdatePrompt(existingDoc: string, missing: string[], promptText: string, docPath: string): string {
+  return [
+    `# New ask for ${docPath}`,
+    "",
+    promptText.trim(),
+    "",
+    `## Current contents of ${docPath}`,
+    "```markdown",
+    existingDoc.trim(),
+    "```",
+    "",
+    "## Missing from the story",
+    ...missing.map((m) => `- ${m}`),
+    "",
+    `Update \`${docPath}\` to add the missing acceptance criteria above. Keep everything already in the file.`,
+  ].join("\n");
+}
+
+export const STORY_GAP_SCHEMA = {
+  type: "object",
+  properties: {
+    covered: { type: "boolean" },
+    missing: { type: "array", items: { type: "string" } },
+    summary: { type: "string" },
+  },
+  required: ["covered", "missing"],
+  additionalProperties: false,
+} as const;
+
+export interface StoryGapVerdict {
+  covered: boolean;
+  missing: string[];
+  summary?: string;
+}
+
+export function parseStoryGap(structured: unknown, text: string): StoryGapVerdict | undefined {
+  const tryObj = (o: unknown): StoryGapVerdict | undefined => {
+    if (!o || typeof o !== "object") return undefined;
+    const r = o as Partial<StoryGapVerdict>;
+    if (typeof r.covered !== "boolean") return undefined;
+    return {
+      covered: r.covered,
+      missing: Array.isArray(r.missing) ? r.missing.map(String) : [],
+      ...(r.summary !== undefined ? { summary: String(r.summary) } : {}),
+    };
+  };
+  const s = tryObj(structured);
+  if (s) return s;
+  const m = text.match(/\{[\s\S]*"covered"[\s\S]*\}/);
+  if (m) {
+    try {
+      return tryObj(JSON.parse(m[0]));
+    } catch {
+      /* fallthrough */
+    }
+  }
+  return undefined;
+}
+
+export interface ParsedStory {
+  title?: string;
+  description: string;
+  acceptance: string[];
+}
+
+/**
+ * Pull title/description/acceptance out of a story doc written in the
+ * `# Title` / body / `## Acceptance criteria` shape the analyst is told to
+ * use. Tolerant of extra sections and missing pieces; never throws.
+ */
+export function parseStoryDoc(markdown: string): ParsedStory {
+  const text = markdown.replace(/\r\n/g, "\n").trim();
+  const titleMatch = text.match(/^#\s+(.+)$/m);
+  const title = titleMatch?.[1]?.trim();
+  const acceptance = extractAcceptanceSection(text);
+  let body = titleMatch ? text.slice(titleMatch.index! + titleMatch[0].length) : text;
+  const heading = body.match(/^#{1,6}\s*acceptance(?:\s+criteria)?\s*$/im);
+  if (heading) body = body.slice(0, heading.index);
+  return { ...(title ? { title } : {}), description: body.trim(), acceptance };
 }

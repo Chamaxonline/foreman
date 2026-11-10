@@ -109,6 +109,27 @@ describe("tool guard", () => {
     expect(relInside(link, "f.txt")).toBe("f.txt");
     expect(relInside(link, ".")).toBe(".");
   });
+
+  it("writeScope restricts writes to the given directories regardless of the protected-path check", () => {
+    const g = makeToolGuard({
+      root,
+      readOnly: false,
+      isProtected,
+      allowedCommands: [],
+      allowBash: true,
+      writeScope: ["docs/stories"],
+    });
+    expect(g("Write", { file_path: "docs/stories/t1.md" }).allow).toBe(true);
+    expect(g("Edit", { file_path: "docs/stories/sub/t2.md" }).allow).toBe(true);
+    expect(g("Write", { file_path: "src/a.ts" })).toMatchObject({ allow: false, reason: /may only write inside/ });
+    expect(g("Write", { file_path: "docs/stories-other/t3.md" }).allow).toBe(false); // prefix match, not a real subdir
+  });
+
+  it("an empty/unset writeScope does not restrict writes (regression)", () => {
+    expect(coder()("Write", { file_path: "src/a.ts" }).allow).toBe(true);
+    const g = makeToolGuard({ root, readOnly: false, isProtected, allowedCommands: [], allowBash: true, writeScope: [] });
+    expect(g("Write", { file_path: "src/a.ts" }).allow).toBe(true);
+  });
 });
 
 describe("agentEnv", () => {
@@ -144,8 +165,11 @@ describe("roles", () => {
     expect(roles.planner.model).toBe("opus");
     expect(roles.coder.model).toBe("sonnet");
     expect(roles.reviewer.model).toBe("opus");
+    expect(roles.analyst.model).toBe("opus");
     expect(roles.coder.prompt).toMatch(/Hard rules/);
     expect(roles.planner.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(roles.analyst.tools).toEqual(["Read", "Glob", "Grep", "Edit", "Write"]);
+    expect(roles.analyst.prompt).toMatch(/only write inside the docs folder/i);
   });
 
   it("parses frontmatter with CRLF", () => {

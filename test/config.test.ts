@@ -18,7 +18,9 @@ checks:
       coder: "sonnet",
       reviewer: "opus",
       escalation: "opus",
+      analyst: "opus",
     });
+    expect(cfg.docs).toEqual({ enabled: false, dir: "docs/stories" });
     expect(cfg.limits.maxAttemptsPerTask).toBe(5);
     expect(cfg.limits.escalateAfterFailures).toBe(2);
     expect(cfg.limits.stuckThreshold).toBe(3);
@@ -61,5 +63,15 @@ pr: { labels: [bot, foreman] }
 
   it("rejects invalid YAML", () => {
     expect(() => parseConfig(`checks: [`)).toThrow(/invalid YAML/);
+  });
+
+  it("accepts docs and analyst model overrides", () => {
+    const cfg = parseConfig(`
+checks: { test: npm test }
+docs: { enabled: true, dir: notes/stories }
+models: { analyst: haiku }
+`);
+    expect(cfg.docs).toEqual({ enabled: true, dir: "notes/stories" });
+    expect(cfg.models.analyst).toBe("haiku");
   });
 });

@@ -30,6 +30,8 @@ const modelsSchema = z
     reviewer: z.string().default("opus"),
     /** Model the coder is switched to after `limits.escalateAfterFailures` failures. */
     escalation: z.string().default("opus"),
+    /** Writes/updates story docs from a raw prompt (see `docs.enabled`). */
+    analyst: z.string().default("opus"),
   })
   .prefault({});
 
@@ -76,6 +78,20 @@ const issuesSchema = z
   .object({
     enabled: z.boolean().default(false),
     label: z.string().default("foreman"),
+  })
+  .prefault({});
+
+const docsSchema = z
+  .object({
+    /**
+     * When true, a task given only a free-text `prompt` gets a formal story
+     * doc under `dir/<task-id>.md` before planning: created if missing;
+     * if present, checked against the prompt and updated with whatever is
+     * missing (existing content is never removed). The analyst agent may
+     * only write inside `dir`.
+     */
+    enabled: z.boolean().default(false),
+    dir: z.string().min(1).default("docs/stories"),
   })
   .prefault({});
 
@@ -145,6 +161,7 @@ export const configSchema = z.object({
   issues: issuesSchema,
   watch: watchSchema,
   agent: agentSchema,
+  docs: docsSchema,
   /** Extra globs agents may never modify, on top of the built-in protected set. */
   protectedPaths: z.array(z.string()).default([]),
   /** "utc" or "local": which midnight resets the daily spend cap. */

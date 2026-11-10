@@ -16,6 +16,13 @@ export interface ToolGuardOptions {
   /** Command lines (or prefixes) the agent may run via Bash. */
   allowedCommands: string[];
   allowBash: boolean;
+  /**
+   * If set (non-empty), writes are allowed only under these repo-relative
+   * directories, on top of the usual root-containment and protected-path
+   * checks. Used for the analyst role, which may author story docs but
+   * nothing else.
+   */
+  writeScope?: string[];
 }
 
 export type GuardDecision = { allow: true } | { allow: false; reason: string };
@@ -72,6 +79,9 @@ export function makeToolGuard(opts: ToolGuardOptions): (tool: string, input: unk
             `${tool}: ${rel} is a protected file (CI/test/lint/foreman config). Agents may not modify it; change the code instead.`,
           );
         }
+        if (opts.writeScope?.length && !isWithinScope(rel, opts.writeScope)) {
+          return deny(`${tool}: this agent may only write inside ${opts.writeScope.join(", ")} (got ${rel})`);
+        }
       }
       return { allow: true };
     }
@@ -122,6 +132,13 @@ function pathsOf(tool: string, input: Record<string, unknown>): string[] {
   add(input.path);
   if (tool === "Glob" && typeof input.pattern === "string" && isAbsoluteLike(input.pattern)) add(input.pattern);
   return out;
+}
+
+function isWithinScope(rel: string, scope: string[]): boolean {
+  return scope.some((dir) => {
+    const d = dir.replace(/\/+$/, "");
+    return rel === d || rel.startsWith(d + "/");
+  });
 }
 
 function isAbsoluteLike(p: string): boolean {

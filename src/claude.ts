@@ -22,6 +22,8 @@ export interface AgentCall {
   resumeSessionId?: string;
   /** JSON schema for structured output (reviewer). */
   outputSchema?: Record<string, unknown>;
+  /** Restrict writes to these repo-relative directories (see toolguard.ts). */
+  writeScope?: string[];
   /** Progress callback for logs. */
   onEvent?: (line: string) => void;
 }
@@ -159,6 +161,7 @@ export class SdkAgentRunner implements AgentRunner {
       isProtected: call.isProtected,
       allowedCommands: call.allowedCommands,
       allowBash: call.allowBash,
+      ...(call.writeScope ? { writeScope: call.writeScope } : {}),
     });
     let denied = 0;
     const preToolUse: HookCallback = async (input) => {

@@ -112,6 +112,15 @@ agent:
   extraAllowedCommands: []
   envPassthrough: []
 
+# Let tasks be given as a bare \`prompt:\` instead of a full title/description/
+# acceptance list (see tasks.yaml). When enabled, foreman writes a story doc
+# under docs.dir before planning (or updates it if one already exists and is
+# missing something), and plans and codes from that doc. The analyst agent
+# that writes it may only touch files inside docs.dir.
+docs:
+  enabled: false
+  dir: docs/stories
+
 # Extra paths agents may never modify (CI, test/lint config, foreman files are always protected)
 protectedPaths: []
 `;
@@ -132,4 +141,12 @@ tasks:
     priority: low
     # model: opus            # optional coder model override
     # files: [README.md]     # optional hint: where to look first
+
+  # A task can also be given as just a free-text ask, with no title or
+  # acceptance list written out. With \`docs.enabled: true\` in
+  # foreman.config.yaml, foreman turns this into a story doc under
+  # docs.dir before planning (or reconciles it against one that's already
+  # there), and plans and codes from that doc.
+  # - id: faster-login
+  #   prompt: The login page feels slow on mobile. Make it noticeably faster.
 `;

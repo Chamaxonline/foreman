@@ -23,11 +23,24 @@ export class World {
   restored: string[][] = [];
   worktrees = 0;
   removed = 0;
+  /** Working-tree file contents, for readWorkingFile. */
+  files: Record<string, string> = {};
 
   edit(p: string, diff = `+++ b/${p}\n+change\n`): void {
     if (!this.changes.some((c) => c.path === p)) this.changes.push({ status: "M", path: p });
     this.diff += diff;
     this.dirty = true;
+  }
+
+  /** Pre-seed a file as already existing (base content), not a change made this attempt. */
+  seed(p: string, content: string): void {
+    this.files[p] = content;
+  }
+
+  /** Simulate an agent writing a file: updates content and registers it as a change. */
+  write(p: string, content: string): void {
+    this.files[p] = content;
+    this.edit(p, `+++ b/${p}\n+${content.split("\n").join("\n+")}\n`);
   }
 }
 
@@ -76,8 +89,8 @@ export class FakeGit implements GitOps {
   async readFileAt() {
     return undefined;
   }
-  async readWorkingFile() {
-    return undefined;
+  async readWorkingFile(_d: string, path: string) {
+    return this.w.files[path];
   }
 }
 
@@ -85,7 +98,7 @@ export type AgentScript = (call: AgentCall, n: number) => Partial<AgentResult> |
 
 export class FakeAgents implements AgentRunner {
   calls: AgentCall[] = [];
-  private counts: Record<Role, number> = { planner: 0, coder: 0, reviewer: 0 };
+  private counts: Record<Role, number> = { planner: 0, coder: 0, reviewer: 0, analyst: 0 };
   constructor(private readonly scripts: Partial<Record<Role, AgentScript>> = {}) {}
 
   async run(call: AgentCall): Promise<AgentResult> {
@@ -93,7 +106,8 @@ export class FakeAgents implements AgentRunner {
     const n = ++this.counts[call.role];
     const defaults: AgentResult = {
       ok: true,
-      text: call.role === "planner" ? "1. do the thing" : call.role === "reviewer" ? "" : "Implemented it.",
+      text:
+        call.role === "planner" ? "1. do the thing" : call.role === "reviewer" || call.role === "analyst" ? "" : "Implemented it.",
       costUsd: 0.1,
       sessionId: `${call.role}-${call.model}-${n}`,
       turns: 1,
@@ -180,6 +194,7 @@ export const roles: Record<Role, RoleDefinition> = {
   planner: { name: "planner", description: "", tools: [], prompt: "PLANNER" },
   coder: { name: "coder", description: "", tools: [], prompt: "CODER" },
   reviewer: { name: "reviewer", description: "", tools: [], prompt: "REVIEWER" },
+  analyst: { name: "analyst", description: "", tools: [], prompt: "ANALYST" },
 };
 
 export function makeConfig(extra = ""): ForemanConfig {

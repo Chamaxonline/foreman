@@ -49,6 +49,20 @@ tasks:
     }
   });
 
+  it("accepts a prompt in place of a title, and derives one", () => {
+    const [t] = parseTasks(`- { id: a1, prompt: "Make the login page faster" }`);
+    expect(t).toMatchObject({ id: "a1", title: "Make the login page faster", prompt: "Make the login page faster" });
+  });
+
+  it("an explicit title wins over the prompt", () => {
+    const [t] = parseTasks(`- { id: a1, title: "Login perf", prompt: "Make the login page faster" }`);
+    expect(t!.title).toBe("Login perf");
+  });
+
+  it("rejects a task with neither a title nor a prompt", () => {
+    expect(() => parseTasks(`- { id: a1 }`)).toThrow(/title or a prompt/);
+  });
+
   it("rejects duplicate ids (case-insensitive) and reports all errors", () => {
     expect(() =>
       parseTasks(`
