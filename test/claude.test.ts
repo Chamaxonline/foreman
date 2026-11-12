@@ -77,6 +77,21 @@ describe("tool guard", () => {
     }
   });
 
+  it("hasOutputSchema lets the SDK's end-turn structured-output carrier through, but only that opt-in", () => {
+    // Regression: outputFormat:json_schema (reviewer, story gap-check) ends its
+    // turn via an internal tool call with a name foreman doesn't recognize.
+    // Denying it by name, like any other unknown tool, silently breaks every
+    // structured-output call. hasOutputSchema widens only the final catch-all.
+    const withSchema = makeToolGuard({ root, readOnly: true, isProtected, allowedCommands: [], allowBash: false, hasOutputSchema: true });
+    expect(withSchema("mystery_end_turn_tool", { anything: 1 }).allow).toBe(true);
+    expect(withSchema("AnotherUnknownName", {}).allow).toBe(true);
+    // named tools are still checked normally even when hasOutputSchema is set
+    expect(withSchema("Write", { file_path: "src/a.ts" }).allow).toBe(false);
+    expect(withSchema("Read", { file_path: "src/a.ts" }).allow).toBe(true);
+
+    expect(coder()("mystery_end_turn_tool", {}).allow).toBe(false); // unset: still denied
+  });
+
   it("checkCommand allows exact configured commands even with &&", () => {
     expect(checkCommand("npm ci && npm test", [], ["npm ci && npm test"])).toBeUndefined();
     expect(checkCommand("npm ci && npm test && x", [], ["npm ci && npm test"])).toBeDefined();
@@ -240,6 +255,28 @@ describe("SdkAgentRunner (with a fake query)", () => {
     const out = await hook({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "../x" } }, "id", { signal: new AbortController().signal });
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(await hook({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "src/x.ts" } }, "id", { signal: new AbortController().signal })).toEqual({});
+  });
+
+  it("outputSchema lets the SDK's end-turn tool call through the PreToolUse hook (reviewer/story gap-check)", async () => {
+    // Regression: without this, a structured-output call's turn can never
+    // end, so the caller never sees a usable verdict (see toolguard.test).
+    let seen: any;
+    const fakeQuery: any = ({ options }: any) => {
+      seen = options;
+      return (async function* (): AsyncGenerator<SDKMessage> {
+        yield { type: "result", subtype: "success", is_error: false, result: "", structured_output: { verdict: "approve" }, total_cost_usd: 0.1, num_turns: 1, session_id: "s3" } as any;
+      })();
+    };
+    await new SdkAgentRunner({ queryFn: fakeQuery }).run(
+      call({ readOnly: true, outputSchema: { type: "object", properties: {} } }),
+    );
+    const hook = seen.hooks.PreToolUse[0].hooks[0];
+    const signal = new AbortController().signal;
+    const out = await hook({ hook_event_name: "PreToolUse", tool_name: "some_internal_end_turn_tool", tool_input: {} }, "id", { signal });
+    expect(out).toEqual({});
+    // still denies a real write even on a structured-output call
+    const denied = await hook({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "src/x.ts" } }, "id", { signal });
+    expect(denied.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("reports error results (e.g. budget exceeded) even when the SDK throws", async () => {

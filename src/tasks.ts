@@ -53,6 +53,13 @@ export const taskSchema = z
     model: z.string().optional(),
     /** Files / areas hint passed to the planner and coder. */
     files: stringList.optional(),
+    /**
+     * Run only these checks (by name, from foreman.config.yaml's `checks`
+     * list) instead of all of them. They still run in the configured order.
+     * Lets an unrelated check (e.g. a second project's install/test) be
+     * skipped for tasks that don't touch it.
+     */
+    checks: stringList.optional(),
     priority: prioritySchema,
   })
   .refine((t) => Boolean(t.title?.trim() || t.prompt?.trim()), {
@@ -78,6 +85,8 @@ export interface Task {
   prompt?: string;
   acceptance: string[];
   model?: string;
+  /** Run only these checks (by name), instead of all configured checks. */
+  checks?: string[];
   files: string[];
   priority: number;
   source: TaskSource;

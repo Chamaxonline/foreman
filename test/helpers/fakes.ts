@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentCall, AgentResult, AgentRunner } from "../../src/claude.js";
 import type { CheckResult, CheckRun, CheckRunner } from "../../src/checks.js";
+import type { CheckCommand } from "../../src/config.js";
 import { parseConfig, type ForemanConfig } from "../../src/config.js";
 import type { ChangedFile } from "../../src/git.js";
 import type { CiRef, CiStatus, CreatePrInput, PullRequestRef, RepoHost } from "../../src/host.js";
@@ -130,10 +131,18 @@ export function checkResult(ok: boolean, output = ok ? "all good" : "FAIL src/a.
 }
 
 export class FakeChecks implements CheckRunner {
-  readonly checks = [{ name: "test", run: "npm test" }];
+  readonly checks: CheckCommand[];
   runs = 0;
-  constructor(private readonly script: (n: number) => CheckRun | Promise<CheckRun> = () => ({ ok: true, results: [checkResult(true)], failureOutput: "" })) {}
-  async run(_dir: string, _signal: AbortSignal): Promise<CheckRun> {
+  /** `only` argument passed to `run()` on each call, for assertions. */
+  onlyCalls: Array<string[] | undefined> = [];
+  constructor(
+    private readonly script: (n: number) => CheckRun | Promise<CheckRun> = () => ({ ok: true, results: [checkResult(true)], failureOutput: "" }),
+    checks: CheckCommand[] = [{ name: "test", run: "npm test" }],
+  ) {
+    this.checks = checks;
+  }
+  async run(_dir: string, _signal: AbortSignal, only?: string[]): Promise<CheckRun> {
+    this.onlyCalls.push(only);
     return this.script(++this.runs);
   }
 }

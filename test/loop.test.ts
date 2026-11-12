@@ -532,3 +532,35 @@ describe("TaskRunner: story docs (docs.enabled)", () => {
     expect(made.state.get("t1")).toMatchObject({ status: "pending", attempts: 0 });
   });
 });
+
+describe("TaskRunner: task.checks (run a subset of configured checks)", () => {
+  const twoChecks = [{ name: "build", run: "npm run build" }, { name: "test", run: "npm test" }];
+
+  it("runs only the task's named checks", async () => {
+    const checks = new FakeChecks(() => passingRun(), twoChecks);
+    const made = await makeDeps({ checks });
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ checks: ["test"] }));
+    expect(out.status).toBe("done");
+    expect(checks.onlyCalls).toEqual([["test"]]);
+  });
+
+  it("runs everything when the task sets no checks override", async () => {
+    const checks = new FakeChecks(() => passingRun(), twoChecks);
+    const made = await makeDeps({ checks });
+    await new TaskRunner(made.deps).runTask(makeTask());
+    expect(checks.onlyCalls).toEqual([undefined]);
+  });
+
+  it("fails immediately (no retry, no agent calls) when task.checks names an unknown check", async () => {
+    const checks = new FakeChecks(() => passingRun(), twoChecks);
+    const agents = new FakeAgents();
+    const made = await makeDeps({ checks, agents });
+    const out = await new TaskRunner(made.deps).runTask(makeTask({ checks: ["typecheck"] }));
+    expect(out.status).toBe("failed");
+    expect(out.reason).toMatch(/typecheck/);
+    expect(out.reason).toMatch(/build, test/);
+    expect(agents.calls).toHaveLength(0);
+    expect(made.world.worktrees).toBe(0);
+    expect(made.state.get("t1")!.status).toBe("failed");
+  });
+});

@@ -162,6 +162,7 @@ export class SdkAgentRunner implements AgentRunner {
       allowedCommands: call.allowedCommands,
       allowBash: call.allowBash,
       ...(call.writeScope ? { writeScope: call.writeScope } : {}),
+      ...(call.outputSchema ? { hasOutputSchema: true } : {}),
     });
     let denied = 0;
     const preToolUse: HookCallback = async (input) => {

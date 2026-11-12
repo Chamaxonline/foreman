@@ -23,6 +23,19 @@ export interface ToolGuardOptions {
    * nothing else.
    */
   writeScope?: string[];
+  /**
+   * Set when the call passed `outputSchema` (structured output). The SDK
+   * ends such a turn through an internal "end-turn tool" call that carries
+   * the JSON payload — not a real tool the model chose from its palette (the
+   * `tools` option already fences which real tools are even offered) and
+   * with no filesystem or process side effects of its own. Denying it by
+   * name, as any other unrecognized tool is denied, silently breaks every
+   * structured-output call: the turn never completes, so `parseReview` (or
+   * the story gap-check) never sees a usable verdict and the caller falls
+   * back to its own default. Named tools (Read/Write/Bash/...) are still
+   * checked as usual; this only widens the final catch-all.
+   */
+  hasOutputSchema?: boolean;
 }
 
 export type GuardDecision = { allow: true } | { allow: false; reason: string };
@@ -93,6 +106,11 @@ export function makeToolGuard(opts: ToolGuardOptions): (tool: string, input: unk
       const reason = checkCommand(cmd, allowed, opts.readOnly ? [] : opts.allowedCommands);
       return reason ? deny(`Bash: ${reason}`) : { allow: true };
     }
+
+    // An unnamed/unrecognized tool during a structured-output call is the
+    // SDK's own end-turn carrier for the JSON payload, not a model-chosen
+    // tool (see hasOutputSchema above) — let it through so the turn can end.
+    if (opts.hasOutputSchema) return { allow: true };
 
     return deny(`${tool} is not available to foreman agents`);
   };

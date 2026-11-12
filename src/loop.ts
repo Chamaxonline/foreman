@@ -1,7 +1,7 @@
 import { Budget, type LimitKind } from "./budget.js";
 import type { AgentCall, AgentResult, AgentRunner } from "./claude.js";
 import type { CheckResult, CheckRunner } from "./checks.js";
-import { checksSummary } from "./checks.js";
+import { checksSummary, selectChecks, UnknownCheckError } from "./checks.js";
 import type { ForemanConfig } from "./config.js";
 import { BranchSafetyError, branchFor, type ChangedFile } from "./git.js";
 import type { CiRef, CiStatus, CreatePrInput, PullRequestRef, RepoHost } from "./host.js";
@@ -217,6 +217,12 @@ export class TaskRunner {
         await d.state.updateTask(task.id, { status: "failed", lastError: err.message, finishedAt: new Date(this.now()).toISOString() });
         return this.outcome(task, "failed", started, models, { reason: err.message });
       }
+      if (err instanceof UnknownCheckError) {
+        // A mistake in tasks.yaml, not an infrastructure hiccup: retrying won't help.
+        d.log.error(`✖ ${task.id}: ${err.message}`);
+        await d.state.updateTask(task.id, { status: "failed", lastError: err.message, finishedAt: new Date(this.now()).toISOString() });
+        return this.outcome(task, "failed", started, models, { reason: err.message });
+      }
       const st = d.state.get(task.id)!;
       const errorCount = (st.errorCount ?? 0) + 1;
       const notBefore = new Date(this.now() + backoffMs(errorCount)).toISOString();
@@ -235,6 +241,8 @@ export class TaskRunner {
   ): Promise<TaskOutcome> {
     const d = this.d;
     const cfg = d.config;
+    // Fail fast on a bad task.checks before spending anything on this attempt.
+    selectChecks(d.checks.checks, task.checks);
     try {
       await d.git.fetch();
     } catch (e) {
@@ -366,7 +374,7 @@ export class TaskRunner {
       }
 
       // ---- checks (run by the runner, never trusted from the agent) ----------
-      const run = await d.checks.run(ctx.dir, ctx.signal);
+      const run = await d.checks.run(ctx.dir, ctx.signal, task.checks);
       ctx.lastChecks = run.results;
       if (ctx.signal.aborted) {
         await this.record(ctx, n, model, "error", "task time limit reached during checks", r.costUsd);

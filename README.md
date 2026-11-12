@@ -430,7 +430,16 @@ tasks:
     files: [src/server.ts]    # optional hint: where to look first
     priority: high            # critical | high | medium | low, or a number (higher runs first)
     model: opus               # optional coder model override
+    checks: [test]            # optional: run only these configured checks (by name), not all of them
 ```
+
+**`checks` on a task:** in a repo with more than one project or area, running
+every configured check on every task wastes time and money on work the task
+never touched (e.g. a second project's install-and-test on a change that
+doesn't involve it). Name a subset of `foreman.config.yaml`'s `checks` to run
+instead — they still run in the order configured there. A name that doesn't
+exist in `checks` fails the task immediately (not retried, no model calls
+spent) rather than discovering the typo mid-run.
 
 ### Story docs: giving a task as just a prompt
 
