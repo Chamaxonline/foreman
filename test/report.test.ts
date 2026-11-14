@@ -12,10 +12,11 @@ describe("summarizeModelUsage", () => {
       [rec("sonnet", 0.1), rec("sonnet", 0.2), rec("opus", 1.0)],
       [rec("opus", 0.5), rec("haiku", 0.05)],
     ]);
+    // total cost = 1.85: opus 1.5/1.85=81.08%, sonnet 0.3/1.85=16.22%, haiku 0.05/1.85=2.70%
     expect(usage).toEqual([
-      { model: "opus", attempts: 2, costUsd: 1.5, pctOfCost: 85.7 },
-      { model: "sonnet", attempts: 2, costUsd: 0.3, pctOfCost: 17.1 },
-      { model: "haiku", attempts: 1, costUsd: 0.05, pctOfCost: 2.9 },
+      { model: "opus", attempts: 2, costUsd: 1.5, pctOfCost: 81.1 },
+      { model: "sonnet", attempts: 2, costUsd: 0.3, pctOfCost: 16.2 },
+      { model: "haiku", attempts: 1, costUsd: 0.05, pctOfCost: 2.7 },
     ]);
     // percentages don't need to add to exactly 100 after rounding, but should be close
     const sum = usage.reduce((s, u) => s + u.pctOfCost, 0);

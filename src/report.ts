@@ -69,7 +69,9 @@ export function summarizeModelUsage(histories: AttemptRecord[][]): ModelUsage[] 
       model,
       attempts: v.attempts,
       costUsd: round(v.costUsd),
-      pctOfCost: total > 0 ? round((v.costUsd / total) * 100) : 0,
+      // 1 decimal place: its only consumers (modelUsageTable, `foreman
+      // status`) display it that way; storing more would just be noise.
+      pctOfCost: total > 0 ? Math.round((v.costUsd / total) * 1000) / 10 : 0,
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.attempts - a.attempts || a.model.localeCompare(b.model));
 }
