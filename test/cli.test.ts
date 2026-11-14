@@ -60,6 +60,38 @@ describe("cli", () => {
     expect(j.tasks[0]).toMatchObject({ id: "example-readme-badge", status: "done" });
   });
 
+  it("status shows configured models and a model-usage breakdown by cost share", async () => {
+    await main(["init", "--repo", dir]);
+    const state = await StateStore.open(path.join(dir, ".foreman"));
+    await state.recordAttempt("example-readme-badge", { n: 1, model: "sonnet", outcome: "check_failed", summary: "x", costUsd: 0.1 });
+    await state.recordAttempt("example-readme-badge", { n: 2, model: "opus", outcome: "pass", summary: "x", costUsd: 0.3 });
+    out = [];
+    expect(await main(["status", "--repo", dir])).toBe(0);
+    const text = out.join("\n");
+    expect(text).toMatch(/Models configured:/);
+    expect(text).toMatch(/planner\s+opus/);
+    expect(text).toMatch(/coder\s+sonnet/);
+    expect(text).toMatch(/Model usage/);
+    expect(text).toMatch(/opus\s+1 calls\s+\$\s*0\.30\s+75\.0%/);
+    expect(text).toMatch(/sonnet\s+1 calls\s+\$\s*0\.10\s+25\.0%/);
+
+    out = [];
+    expect(await main(["status", "--repo", dir, "--json"])).toBe(0);
+    const j = JSON.parse(out.join("\n"));
+    expect(j.models).toMatchObject({ planner: "opus", coder: "sonnet" });
+    expect(j.modelUsage).toEqual([
+      { model: "opus", attempts: 1, costUsd: 0.3, pctOfCost: 75 },
+      { model: "sonnet", attempts: 1, costUsd: 0.1, pctOfCost: 25 },
+    ]);
+  });
+
+  it("status omits the model-usage section when nothing has run yet", async () => {
+    await main(["init", "--repo", dir]);
+    out = [];
+    expect(await main(["status", "--repo", dir])).toBe(0);
+    expect(out.join("\n")).not.toMatch(/Model usage/);
+  });
+
   it("reports config errors with exit code 2", async () => {
     expect(await main(["status", "--repo", dir])).toBe(2);
     expect(out.join("\n")).toMatch(/foreman init/);

@@ -1,7 +1,7 @@
 import type { ForemanConfig } from "./config.js";
 import type { RepoHost } from "./host.js";
 import { backoffMs, type Logger } from "./loop.js";
-import { writeRunReport, type RunReport, type TaskOutcome } from "./report.js";
+import { summarizeModelUsage, writeRunReport, type RunReport, type TaskOutcome } from "./report.js";
 import type { StateStore } from "./state.js";
 import { sortByPriority, type Task } from "./tasks.js";
 
@@ -128,6 +128,10 @@ export class Orchestrator {
       dryRun: d.dryRun,
       totalCostUsd: d.state.runCost(run.id),
       spentTodayUsd: d.state.spentToday(),
+      // Scoped to attempts made during this run, not a task's full history
+      // (which can carry attempts from an earlier run on a --retry or a
+      // crash-recovered task).
+      modelUsage: summarizeModelUsage(outcomes.map((o) => o.history.filter((h) => h.at >= startedAt))),
       ...(stoppedReason ? { stoppedReason } : {}),
       tasks: outcomes,
     };

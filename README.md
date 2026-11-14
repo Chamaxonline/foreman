@@ -185,7 +185,7 @@ foreman status                       # task states, spend today, last run
 | `foreman run` | Processes runnable tasks once, writes a report, then exits. |
 | `foreman dry-run` | Same as `run`, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman watch` | Processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
-| `foreman status [--json]` | Shows per-task status, attempts, cost and PR links, plus spend against the daily cap. |
+| `foreman status [--json]` | Shows configured models per role, a cost/call breakdown by model across tracked attempts, per-task status/attempts/cost/PR links, and spend against the daily cap. |
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.

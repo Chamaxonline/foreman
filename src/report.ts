@@ -36,6 +36,49 @@ export interface TaskOutcome {
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const mins = (ms: number) => `${(ms / 60000).toFixed(1)} min`;
+const round = (n: number) => Math.round(n * 1e6) / 1e6;
+
+export interface ModelUsage {
+  model: string;
+  attempts: number;
+  costUsd: number;
+  /** 0-100. 0 for every model when nothing in the set has a nonzero cost. */
+  pctOfCost: number;
+}
+
+/**
+ * Totals attempts and cost by model across a set of attempt-history lists
+ * (e.g. every task's history for a run, or every task currently tracked),
+ * sorted by cost descending. `pctOfCost` is each model's share of the total
+ * cost across everything passed in, not of your whole account spend.
+ */
+export function summarizeModelUsage(histories: AttemptRecord[][]): ModelUsage[] {
+  const byModel = new Map<string, { attempts: number; costUsd: number }>();
+  let total = 0;
+  for (const history of histories) {
+    for (const h of history) {
+      const cur = byModel.get(h.model) ?? { attempts: 0, costUsd: 0 };
+      cur.attempts++;
+      cur.costUsd += h.costUsd;
+      byModel.set(h.model, cur);
+      total += h.costUsd;
+    }
+  }
+  return [...byModel.entries()]
+    .map(([model, v]) => ({
+      model,
+      attempts: v.attempts,
+      costUsd: round(v.costUsd),
+      pctOfCost: total > 0 ? round((v.costUsd / total) * 100) : 0,
+    }))
+    .sort((a, b) => b.costUsd - a.costUsd || b.attempts - a.attempts || a.model.localeCompare(b.model));
+}
+
+export function modelUsageTable(usage: ModelUsage[]): string {
+  if (!usage.length) return "_No model usage recorded._";
+  const rows = usage.map((u) => `| \`${u.model}\` | ${u.attempts} | ${usd(u.costUsd)} | ${u.pctOfCost.toFixed(1)}% |`);
+  return ["| Model | Calls | Cost | % of cost |", "|---|---|---|---|", ...rows].join("\n");
+}
 
 export function historyTable(history: AttemptRecord[]): string {
   if (!history.length) return "_No attempts recorded._";
@@ -158,6 +201,7 @@ export interface RunReport {
   dryRun: boolean;
   totalCostUsd: number;
   spentTodayUsd: number;
+  modelUsage: ModelUsage[];
   stoppedReason?: string;
   tasks: TaskOutcome[];
 }
@@ -172,6 +216,9 @@ export function runReportMarkdown(r: RunReport): string {
     `- Cost this run: ${usd(r.totalCostUsd)} (today: ${usd(r.spentTodayUsd)})`,
     `- Done: ${count("done")} · Needs human: ${count("needs_human")} · Deferred: ${count("deferred")} · Errors: ${count("error") + count("failed")} · Skipped: ${count("skipped")}`,
     ...(r.stoppedReason ? [`- Stopped early: ${r.stoppedReason}`] : []),
+    "",
+    "## Model usage (this run)",
+    modelUsageTable(r.modelUsage),
     "",
     "| Task | Status | Attempts | Cost | PR | Notes |",
     "|---|---|---|---|---|---|",

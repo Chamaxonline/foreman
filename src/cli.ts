@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { AuthError, type AuthMode } from "./claude.js";
 import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
 import { execFile } from "./exec.js";
-import type { OutcomeStatus, RunReport } from "./report.js";
+import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
 import { createRuntime } from "./runtime.js";
 import { acquireLock, LockError, StateStore, STATE_DIR } from "./state.js";
 import { loadTasks, sortByPriority, TasksError } from "./tasks.js";
@@ -258,10 +258,16 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
     }
   }
   const lastRun = snap.runs.at(-1);
+  // Lifetime-ish: every attempt still tracked for every task currently in
+  // state (trimmed to the last MAX_HISTORY attempts per task; old runs
+  // rotate out of this, not just out of this run).
+  const modelUsage = summarizeModelUsage(Object.values(snap.tasks).map((t) => t.history));
   const summary = {
     repo: repoDir,
+    models: config.models,
     spentTodayUsd: state.spentToday(),
     dailyCapUsd: config.limits.maxSpendPerDayUsd,
+    modelUsage,
     lastRun,
     tasks: rows,
   };
@@ -269,9 +275,19 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
     console.log(JSON.stringify(summary, null, 2));
     return 0;
   }
+  console.log("Models configured:");
+  for (const [role, model] of Object.entries(summary.models)) console.log(`  ${role.padEnd(10)} ${model}`);
+  console.log("");
   console.log(`Spend today: $${summary.spentTodayUsd.toFixed(2)} / $${summary.dailyCapUsd.toFixed(2)}`);
   if (lastRun) console.log(`Last run:    ${lastRun.id} ($${lastRun.costUsd.toFixed(2)}${lastRun.dryRun ? ", dry run" : ""})`);
   console.log("");
+  if (modelUsage.length) {
+    console.log("Model usage (tracked attempts across all tasks):");
+    for (const u of modelUsage) {
+      console.log(`  ${u.model.padEnd(10)} ${String(u.attempts).padStart(3)} calls  $${u.costUsd.toFixed(2).padStart(6)}  ${u.pctOfCost.toFixed(1).padStart(5)}%`);
+    }
+    console.log("");
+  }
   if (!rows.length) console.log("No tasks. Add some to " + config.tasksFile);
   for (const r of rows) {
     const extra = r.prUrl ?? (r.status === "pending" && r.notBefore ? `retry after ${r.notBefore}` : (r.lastError ?? ""));
