@@ -111,6 +111,26 @@ describe("cli", () => {
     await expect(main(["dashboard", "--repo", dir, "--open"])).resolves.toBe(0);
   });
 
+  it("dashboard --watch keeps refreshing the file until interrupted, then exits cleanly", async () => {
+    await main(["init", "--repo", dir]);
+    const run = main(["dashboard", "--repo", dir, "--watch", "--interval", "1"]);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const html = await readFile(path.join(dir, ".foreman", "dashboard.html"), "utf8");
+    expect(html).toContain('<meta http-equiv="refresh" content="1">');
+    expect(out.join("\n")).toMatch(/Watching — refreshing/);
+
+    process.emit("SIGINT");
+    expect(await run).toBe(0);
+  });
+
+  it("dashboard rejects a non-positive --interval", async () => {
+    await main(["init", "--repo", dir]);
+    out = [];
+    expect(await main(["dashboard", "--repo", dir, "--watch", "--interval", "0"])).toBe(2);
+    expect(out.join("\n")).toMatch(/--interval must be a positive number/);
+  });
+
   it("reports config errors with exit code 2", async () => {
     expect(await main(["status", "--repo", dir])).toBe(2);
     expect(out.join("\n")).toMatch(/foreman init/);

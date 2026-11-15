@@ -24,6 +24,7 @@ Usage:
   foreman watch                       Run continuously: process, idle, poll again
   foreman status [--json]             Show task status, spend and the last run
   foreman dashboard [--open]          Write a local HTML snapshot (model usage, spend, tasks)
+  foreman dashboard --watch [--open]  Keep refreshing that page while a run is in progress
 
 Options:
   --repo <dir>          Target repository (default: current directory)
@@ -32,6 +33,8 @@ Options:
   --dry-run             Do everything except push and open PRs
   --tasks-from-remote   Read tasks.yaml from <remote>/<baseBranch> instead of the working tree
   --keep-worktrees      Keep task worktrees in .foreman/worktrees for debugging
+  --watch               With dashboard: keep rewriting the file until Ctrl+C
+  --interval <seconds>  With dashboard --watch: refresh interval (default 5)
   --force-unlock        Take over a lock held by another foreman process
   --auth <mode>         Claude credential: auto | subscription | api-key (overrides agent.auth)
   -v, --verbose         Print agent activity
@@ -76,6 +79,8 @@ export async function main(argv: string[]): Promise<number> {
         force: { type: "boolean" },
         json: { type: "boolean" },
         open: { type: "boolean" },
+        watch: { type: "boolean" },
+        interval: { type: "string" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -103,8 +108,14 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInit(repoDir, Boolean(o.force));
       case "status":
         return await cmdStatus(repoDir, Boolean(o.json));
-      case "dashboard":
-        return await cmdDashboard(repoDir, Boolean(o.open));
+      case "dashboard": {
+        const interval = o.interval ? Number(o.interval) : 5;
+        if (!Number.isFinite(interval) || interval <= 0) {
+          console.error("--interval must be a positive number of seconds");
+          return 2;
+        }
+        return await cmdDashboard(repoDir, Boolean(o.open), Boolean(o.watch), interval);
+      }
       case "run":
       case "dry-run":
       case "watch": {
@@ -308,28 +319,63 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   return 0;
 }
 
-async function cmdDashboard(repoDir: string, open: boolean): Promise<number> {
-  const summary = await loadStatusSummary(repoDir);
+function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+function openInBrowser(file: string): void {
+  const opener = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+  const cmd = process.platform === "win32" ? "cmd" : opener;
+  const args = process.platform === "win32" ? ["/c", "start", "", file] : [file];
+  try {
+    // No GUI opener (headless/SSH/CI, or xdg-open missing) fails async via
+    // an 'error' event, not a thrown exception — without a listener that
+    // becomes an uncaught exception. Swallow it; opening is a convenience.
+    spawn(cmd, args, { stdio: "ignore", detached: true })
+      .on("error", () => console.log("Could not open it automatically; open the file above in a browser."))
+      .unref();
+  } catch {
+    console.log(`Could not open it automatically; open the file above in a browser.`);
+  }
+}
+
+async function cmdDashboard(repoDir: string, open: boolean, watch: boolean, intervalSeconds: number): Promise<number> {
   const file = path.join(repoDir, STATE_DIR, "dashboard.html");
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, renderDashboardHtml(summary, new Date().toISOString()));
+  const writeOnce = async () => {
+    const summary = await loadStatusSummary(repoDir);
+    await writeFile(file, renderDashboardHtml(summary, new Date().toISOString(), watch ? intervalSeconds : undefined));
+  };
+  await writeOnce();
   console.log(`Wrote ${file}`);
-  if (open) {
-    const opener = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
-    const cmd = process.platform === "win32" ? "cmd" : opener;
-    const args = process.platform === "win32" ? ["/c", "start", "", file] : [file];
-    try {
-      // No GUI opener (headless/SSH/CI, or xdg-open missing) fails async via
-      // an 'error' event, not a thrown exception — without a listener that
-      // becomes an uncaught exception. Swallow it; opening is a convenience.
-      spawn(cmd, args, { stdio: "ignore", detached: true })
-        .on("error", () => console.log("Could not open it automatically; open the file above in a browser."))
-        .unref();
-    } catch {
-      console.log(`Could not open it automatically; open the file above in a browser.`);
+  if (open) openInBrowser(file);
+
+  if (!watch) {
+    if (!open) console.log("Open it in a browser, or rerun with --open.");
+    return 0;
+  }
+
+  console.log(`Watching — refreshing ${file} every ${intervalSeconds}s. The open page reloads itself. Press Ctrl+C to stop.`);
+  const stop = new AbortController();
+  const onSignal = () => {
+    console.error("\nStopping dashboard watch.");
+    stop.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    while (!stop.signal.aborted) {
+      await sleepAbortable(intervalSeconds * 1000, stop.signal);
+      if (stop.signal.aborted) break;
+      await writeOnce();
     }
-  } else {
-    console.log("Open it in a browser, or rerun with --open.");
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
   return 0;
 }

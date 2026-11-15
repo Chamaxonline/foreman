@@ -89,7 +89,7 @@ function taskRows(tasks: DashboardTaskRow[]): string {
 }
 
 /** A small, static, self-contained HTML page — open it locally; nothing is hosted. */
-export function renderDashboardHtml(s: DashboardSummary, generatedAt: string): string {
+export function renderDashboardHtml(s: DashboardSummary, generatedAt: string, refreshSeconds?: number): string {
   const spendPct = s.dailyCapUsd > 0 ? Math.min(100, (s.spentTodayUsd / s.dailyCapUsd) * 100) : 0;
   const spendColor = spendPct >= 90 ? "var(--status-critical)" : spendPct >= 70 ? "var(--status-warning)" : "var(--m0)";
   const modelsConfigured = Object.entries(s.models)
@@ -101,7 +101,7 @@ export function renderDashboardHtml(s: DashboardSummary, generatedAt: string): s
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>foreman dashboard</title>
+${refreshSeconds ? `<meta http-equiv="refresh" content="${refreshSeconds}">\n` : ""}<title>foreman dashboard</title>
 <style>
   :root {
     color-scheme: light;
@@ -185,7 +185,7 @@ export function renderDashboardHtml(s: DashboardSummary, generatedAt: string): s
     </table>
   </div>
 
-  <p class="muted" style="font-size:12px">Static snapshot — re-run <code>foreman dashboard</code> to refresh.</p>
+  <p class="muted" style="font-size:12px">${refreshSeconds ? `Watching — this page reloads itself every ${refreshSeconds}s.` : `Static snapshot — re-run <code>foreman dashboard</code> to refresh, or use <code>foreman dashboard --watch</code>.`}</p>
 </div>
 </body>
 </html>

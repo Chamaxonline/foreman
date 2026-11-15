@@ -79,6 +79,19 @@ describe("renderDashboardHtml", () => {
     expect(high).toContain("background:var(--status-critical)");
   });
 
+  it("omits the auto-refresh meta tag for a plain static snapshot", () => {
+    const html = renderDashboardHtml(summary(), "x");
+    expect(html).not.toMatch(/http-equiv="refresh"/);
+    expect(html).toContain("Static snapshot");
+  });
+
+  it("adds a self-reloading meta tag and watching note when refreshSeconds is given", () => {
+    const html = renderDashboardHtml(summary(), "x", 5);
+    expect(html).toContain('<meta http-equiv="refresh" content="5">');
+    expect(html).toContain("Watching — this page reloads itself every 5s.");
+    expect(html).not.toContain("Static snapshot");
+  });
+
   it("every status maps to a labeled, non-color-alone pill", () => {
     const tasks = ["done", "needs_human", "failed", "in_progress", "pending", "weird_future_status"].map((status, i) => ({
       id: `t${i}`,
