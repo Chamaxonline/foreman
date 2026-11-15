@@ -92,6 +92,25 @@ describe("cli", () => {
     expect(out.join("\n")).not.toMatch(/Model usage/);
   });
 
+  it("dashboard writes a self-contained HTML snapshot under .foreman/", async () => {
+    await main(["init", "--repo", dir]);
+    const state = await StateStore.open(path.join(dir, ".foreman"));
+    await state.recordAttempt("example-readme-badge", { n: 1, model: "opus", outcome: "pass", summary: "x", costUsd: 0.3 });
+    out = [];
+    expect(await main(["dashboard", "--repo", dir])).toBe(0);
+    expect(out.join("\n")).toMatch(/Wrote .*dashboard\.html/);
+    expect(out.join("\n")).toMatch(/rerun with --open/);
+    const html = await readFile(path.join(dir, ".foreman", "dashboard.html"), "utf8");
+    expect(html).toMatch(/^<!doctype html>/);
+    expect(html).toContain("opus");
+    expect(html).toContain("100.0%"); // only model used so far: 100% of tracked cost
+  });
+
+  it("dashboard --open never throws even if no GUI opener is available", async () => {
+    await main(["init", "--repo", dir]);
+    await expect(main(["dashboard", "--repo", dir, "--open"])).resolves.toBe(0);
+  });
+
   it("reports config errors with exit code 2", async () => {
     expect(await main(["status", "--repo", dir])).toBe(2);
     expect(out.join("\n")).toMatch(/foreman init/);

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { AuthError, type AuthMode } from "./claude.js";
 import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
+import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
 import { createRuntime } from "./runtime.js";
@@ -21,6 +23,7 @@ Usage:
   foreman dry-run [--task <id>]       Like run, but never pushes or opens PRs
   foreman watch                       Run continuously: process, idle, poll again
   foreman status [--json]             Show task status, spend and the last run
+  foreman dashboard [--open]          Write a local HTML snapshot (model usage, spend, tasks)
 
 Options:
   --repo <dir>          Target repository (default: current directory)
@@ -72,6 +75,7 @@ export async function main(argv: string[]): Promise<number> {
         auth: { type: "string" },
         force: { type: "boolean" },
         json: { type: "boolean" },
+        open: { type: "boolean" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -99,6 +103,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInit(repoDir, Boolean(o.force));
       case "status":
         return await cmdStatus(repoDir, Boolean(o.json));
+      case "dashboard":
+        return await cmdDashboard(repoDir, Boolean(o.open));
       case "run":
       case "dry-run":
       case "watch": {
@@ -232,7 +238,7 @@ async function writeGitHubStepSummary(r: RunReport, repoDir: string): Promise<vo
   }
 }
 
-async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
+async function loadStatusSummary(repoDir: string) {
   const config = await loadConfig(repoDir);
   const tasks = sortByPriority(await loadTasks(path.join(repoDir, config.tasksFile)));
   const state = await StateStore.open(path.join(repoDir, STATE_DIR), { dayBoundary: config.dayBoundary });
@@ -262,8 +268,9 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   // state (trimmed to the last MAX_HISTORY attempts per task; old runs
   // rotate out of this, not just out of this run).
   const modelUsage = summarizeModelUsage(Object.values(snap.tasks).map((t) => t.history));
-  const summary = {
+  return {
     repo: repoDir,
+    tasksFile: config.tasksFile,
     models: config.models,
     spentTodayUsd: state.spentToday(),
     dailyCapUsd: config.limits.maxSpendPerDayUsd,
@@ -271,6 +278,11 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
     lastRun,
     tasks: rows,
   };
+}
+
+async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
+  const summary = await loadStatusSummary(repoDir);
+  const { modelUsage, lastRun, tasks: rows } = summary;
   if (json) {
     console.log(JSON.stringify(summary, null, 2));
     return 0;
@@ -288,10 +300,36 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
     }
     console.log("");
   }
-  if (!rows.length) console.log("No tasks. Add some to " + config.tasksFile);
+  if (!rows.length) console.log("No tasks. Add some to " + summary.tasksFile);
   for (const r of rows) {
     const extra = r.prUrl ?? (r.status === "pending" && r.notBefore ? `retry after ${r.notBefore}` : (r.lastError ?? ""));
     console.log(`  ${r.status.padEnd(11)} ${r.id.padEnd(24)} ${String(r.attempts).padStart(2)} att  $${r.costUsd.toFixed(2).padStart(6)}  ${r.title}${extra ? `  ${extra}` : ""}`);
+  }
+  return 0;
+}
+
+async function cmdDashboard(repoDir: string, open: boolean): Promise<number> {
+  const summary = await loadStatusSummary(repoDir);
+  const file = path.join(repoDir, STATE_DIR, "dashboard.html");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, renderDashboardHtml(summary, new Date().toISOString()));
+  console.log(`Wrote ${file}`);
+  if (open) {
+    const opener = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+    const cmd = process.platform === "win32" ? "cmd" : opener;
+    const args = process.platform === "win32" ? ["/c", "start", "", file] : [file];
+    try {
+      // No GUI opener (headless/SSH/CI, or xdg-open missing) fails async via
+      // an 'error' event, not a thrown exception — without a listener that
+      // becomes an uncaught exception. Swallow it; opening is a convenience.
+      spawn(cmd, args, { stdio: "ignore", detached: true })
+        .on("error", () => console.log("Could not open it automatically; open the file above in a browser."))
+        .unref();
+    } catch {
+      console.log(`Could not open it automatically; open the file above in a browser.`);
+    }
+  } else {
+    console.log("Open it in a browser, or rerun with --open.");
   }
   return 0;
 }

@@ -186,6 +186,7 @@ foreman status                       # task states, spend today, last run
 | `foreman dry-run` | Same as `run`, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman watch` | Processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
 | `foreman status [--json]` | Shows configured models per role, a cost/call breakdown by model across tracked attempts, per-task status/attempts/cost/PR links, and spend against the daily cap. |
+| `foreman dashboard [--open]` | Writes a static, self-contained `.foreman/dashboard.html` — the same data as `status`, as a page you open in a browser: a spend meter, a model-usage bar chart, and the task table. Nothing is hosted or sent anywhere; `--open` tries to launch it in your default browser. |
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.
