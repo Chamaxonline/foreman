@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -424,9 +424,13 @@ async function detectBaseBranch(repoDir: string): Promise<string> {
 // Run when executed directly (bin), not when imported by tests.
 const invokedDirectly = (() => {
   try {
+    // import.meta.url resolves through symlinks (e.g. `npm link`), so argv[1]
+    // must be realpath'd too, or a linked global install never matches and
+    // the CLI silently does nothing.
     const self = fileURLToPath(import.meta.url);
-    const arg = process.argv[1] ? path.resolve(process.argv[1]) : "";
-    return arg === self || arg.replace(/\.js$/, "") === self.replace(/\.js$/, "") || /[\\/](foreman|claude-foreman)(\.cmd|\.js)?$/.test(arg);
+    const resolved = process.argv[1] ? path.resolve(process.argv[1]) : "";
+    const arg = resolved ? (realpathSync(resolved, { encoding: "utf8" }) as string) : "";
+    return arg === self || resolved === self || arg.replace(/\.js$/, "") === self.replace(/\.js$/, "") || /[\\/](foreman|claude-foreman)(\.cmd|\.js)?$/.test(resolved);
   } catch {
     return false;
   }
