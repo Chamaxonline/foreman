@@ -188,6 +188,7 @@ foreman status                       # task states, spend today, last run
 | `foreman status [--json]` | Shows configured models per role, a cost/call breakdown by model across tracked attempts, per-task status/attempts/cost/PR links, and spend against the daily cap. |
 | `foreman dashboard [--open]` | Writes a static, self-contained `.foreman/dashboard.html` — the same data as `status`, as a page you open in a browser: a spend meter, a model-usage bar chart, and the task table. Nothing is hosted or sent anywhere; `--open` tries to launch it in your default browser. |
 | `foreman dashboard --watch [--open] [--interval <seconds>]` | Keeps rewriting that same file (every 5s by default) while a run is in progress, and the open page reloads itself to match — a live-ish local monitor with no server involved. Stop with Ctrl+C. |
+| `foreman logs [-f] [-n <lines>]` | Prints the end of `.foreman/logs/foreman.log` (40 lines by default). `-f` keeps following it, so you can watch a run that was started in the background from another terminal. |
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.
@@ -232,9 +233,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0, persist-credentials: false }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 22 }
       - run: npm ci                       # whatever your checks need
       - uses: Chamaxonline/foreman@v0            # pin a commit SHA in production

@@ -53,6 +53,11 @@ export function configTemplate(p: DetectedProject, baseBranch = "main"): string 
   const checks = p.checks.map((c) => `  ${c.name}: ${JSON.stringify(c.run)}`).join("\n");
   return `# foreman configuration (https://www.npmjs.com/package/claude-foreman)
 # Detected project type: ${p.kind}. Review the check commands below.
+#
+# foreman is an optional CLI that anyone on the team can run. If you don't use
+# it, ignore this file: nothing here does anything unless someone runs
+# \`foreman\`. PRs it opens are labeled "foreman", are never merged by it, and
+# get a normal human review.
 
 # owner/name; inferred from the "origin" remote when omitted
 # repo: your-org/your-repo
@@ -134,6 +139,7 @@ protectedPaths: []
 
 export const TASKS_TEMPLATE = `# foreman task queue. Tasks run highest priority first.
 # Each task becomes a branch foreman/<id> and a pull request.
+# Not using foreman? Ignore this file; it only matters to whoever runs it.
 tasks:
   - id: example-readme-badge
     title: Add a "Built with foreman" section to the README

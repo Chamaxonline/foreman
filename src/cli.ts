@@ -9,6 +9,7 @@ import { AuthError, type AuthMode } from "./claude.js";
 import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
 import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
+import { sleepAbortable, tailLog } from "./logs.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
 import { createRuntime } from "./runtime.js";
 import { acquireLock, LockError, StateStore, STATE_DIR, usageOf } from "./state.js";
@@ -25,6 +26,7 @@ Usage:
   foreman status [--json]             Show task status, spend and the last run
   foreman dashboard [--open]          Write a local HTML snapshot (model usage, spend, tasks)
   foreman dashboard --watch [--open]  Keep refreshing that page while a run is in progress
+  foreman logs [-f] [-n <lines>]      Show the run log (last 40 lines); -f keeps following it
 
 Options:
   --repo <dir>          Target repository (default: current directory)
@@ -81,6 +83,8 @@ export async function main(argv: string[]): Promise<number> {
         open: { type: "boolean" },
         watch: { type: "boolean" },
         interval: { type: "string" },
+        follow: { type: "boolean", short: "f" },
+        lines: { type: "string", short: "n" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -108,6 +112,14 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInit(repoDir, Boolean(o.force));
       case "status":
         return await cmdStatus(repoDir, Boolean(o.json));
+      case "logs": {
+        const lines = o.lines ? Number(o.lines) : 40;
+        if (!Number.isInteger(lines) || lines < 1) {
+          console.error("--lines must be a positive whole number");
+          return 2;
+        }
+        return await cmdLogs(repoDir, Boolean(o.follow), lines);
+      }
       case "dashboard": {
         const interval = o.interval ? Number(o.interval) : 5;
         if (!Number.isFinite(interval) || interval <= 0) {
@@ -318,12 +330,25 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   return 0;
 }
 
-function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
-  });
+async function cmdLogs(repoDir: string, follow: boolean, lines: number): Promise<number> {
+  const file = path.join(repoDir, STATE_DIR, "logs", "foreman.log");
+  const stop = new AbortController();
+  const onSignal = () => stop.abort();
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    const found = await tailLog(file, {
+      lines,
+      follow,
+      signal: stop.signal,
+      write: (text) => console.log(text.replace(/\r?\n$/, "")),
+    });
+    if (!found) console.log(`No log yet: ${file}\nIt is created by \`foreman run\`; use \`foreman logs -f\` to wait for it.`);
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+  return 0;
 }
 
 function openInBrowser(file: string): void {
@@ -405,6 +430,11 @@ async function cmdInit(repoDir: string, force: boolean): Promise<number> {
   for (const w of written) console.log(`wrote ${w}`);
   console.log(`\nDetected ${project.kind}; checks: ${project.checks.map((c) => c.run).join(" → ")}`);
   console.log("Next: review foreman.config.yaml, edit tasks.yaml, then `foreman dry-run`.");
+  // These files are committed, so an image built with `COPY . .` would ship the task backlog.
+  const dockerignore = path.join(repoDir, ".dockerignore");
+  if (existsSync(path.join(repoDir, "Dockerfile")) && !/tasks\.yaml/.test(existsSync(dockerignore) ? await readFile(dockerignore, "utf8") : "")) {
+    console.log("Note: this repo has a Dockerfile. Add foreman.config.yaml, tasks.yaml and .foreman/ to .dockerignore so they don't end up in built images.");
+  }
   return 0;
 }
 

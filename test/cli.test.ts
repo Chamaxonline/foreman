@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,6 +144,45 @@ describe("cli", () => {
     out = [];
     expect(await main(["dashboard", "--repo", dir, "--watch", "--interval", "0"])).toBe(2);
     expect(out.join("\n")).toMatch(/--interval must be a positive number/);
+  });
+
+  it("logs shows the end of the run log, and says so when there is none yet", async () => {
+    expect(await main(["logs", "--repo", dir])).toBe(0);
+    expect(out.join("\n")).toMatch(/No log yet/);
+
+    await mkdir(path.join(dir, ".foreman", "logs"), { recursive: true });
+    await writeFile(path.join(dir, ".foreman", "logs", "foreman.log"), Array.from({ length: 5 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+    out = [];
+    expect(await main(["logs", "--repo", dir, "-n", "2"])).toBe(0);
+    expect(out.join("\n")).toBe("line 4\nline 5");
+  });
+
+  it("logs rejects a bad --lines", async () => {
+    out = [];
+    expect(await main(["logs", "--repo", dir, "-n", "0"])).toBe(2);
+    expect(out.join("\n")).toMatch(/--lines must be a positive whole number/);
+    expect(await main(["logs", "--repo", dir, "-n", "abc"])).toBe(2);
+  });
+
+  it("init tells teammates who don't use foreman they can ignore the files", async () => {
+    await main(["init", "--repo", dir]);
+    expect(await readFile(path.join(dir, "foreman.config.yaml"), "utf8")).toMatch(/optional CLI.*\n.*ignore this file/s);
+    expect(await readFile(path.join(dir, "tasks.yaml"), "utf8")).toMatch(/Not using foreman\? Ignore this file/);
+  });
+
+  it("init warns about .dockerignore only when there is a Dockerfile that doesn't already exclude tasks.yaml", async () => {
+    await main(["init", "--repo", dir]);
+    expect(out.join("\n")).not.toMatch(/dockerignore/);
+
+    await writeFile(path.join(dir, "Dockerfile"), "FROM node:22\nCOPY . .\n");
+    out = [];
+    await main(["init", "--repo", dir, "--force"]);
+    expect(out.join("\n")).toMatch(/Add foreman\.config\.yaml, tasks\.yaml and \.foreman\/ to \.dockerignore/);
+
+    await writeFile(path.join(dir, ".dockerignore"), "node_modules\ntasks.yaml\nforeman.config.yaml\n.foreman/\n");
+    out = [];
+    await main(["init", "--repo", dir, "--force"]);
+    expect(out.join("\n")).not.toMatch(/dockerignore/);
   });
 
   it("reports config errors with exit code 2", async () => {
