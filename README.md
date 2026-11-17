@@ -38,6 +38,26 @@ as a PR for a human to review.
 
 ---
 
+## Quick start
+
+```bash
+# 1. Install (not on npm yet; see Setup)
+git clone https://github.com/Chamaxonline/foreman && cd foreman
+npm install && npm run build && npm link
+
+# 2. In the repository you want it to work on
+cd your-repo
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)    # or: export ANTHROPIC_API_KEY=sk-ant-...
+foreman init          # writes foreman.config.yaml + tasks.yaml, detects your check commands
+foreman dry-run       # the full loop, with no push and no PRs
+```
+
+When the dry run looks right, set `GITHUB_TOKEN` (or `FOREMAN_AZURE_TOKEN` for
+Azure DevOps) and run `foreman run`. Watch it from a second terminal with
+`foreman logs -f` or `foreman dashboard --watch --open`.
+
+---
+
 ## Contents
 
 - [How it works](#how-it-works)
@@ -48,6 +68,7 @@ as a PR for a human to review.
 - [Running on an always-on server](#running-on-an-always-on-server)
 - [Configuration reference](#configuration-reference)
 - [Tasks](#tasks)
+- [Using foreman in a team](#using-foreman-in-a-team)
 - [Safety model](#safety-model)
 - [Claude Code plugin](#claude-code-plugin)
 - [State, reports and logs](#state-reports-and-logs)
@@ -61,7 +82,9 @@ For each pending task, highest priority first:
 
 1. **Branch.** foreman creates a git worktree at `.foreman/worktrees/<id>` on
    branch `foreman/<task-id>`, starting from `origin/<baseBranch>`. Your own
-   checkout is never touched.
+   checkout is never touched. If `setup` is configured (usually the dependency
+   install), it runs now, before any model call. If it fails, the task stops
+   without spending anything and is retried later.
 2. **Plan.** The planner (a strong model, read-only) turns the task into a
    short plan.
 3. **Code.** The coder (a cheaper model by default) implements the plan.
@@ -94,13 +117,22 @@ For each pending task, highest priority first:
 **Requirements:** Node.js 20+, git, and a repository on GitHub or Azure
 DevOps (Services, or Server with an explicit `azureDevOps.orgUrl`).
 
+### Install
+
 ```bash
-cd your-repo
-npx claude-foreman init     # writes foreman.config.yaml + tasks.yaml, detects your check commands
+git clone https://github.com/Chamaxonline/foreman && cd foreman
+npm install && npm run build
+npm link            # puts a `foreman` command on your PATH
 ```
 
-> The npm package is `claude-foreman`, and it installs a `foreman` command.
-> After `npm i -g claude-foreman` you can run `foreman ...` directly.
+> foreman is not published to npm yet. Once it is, `npm i -g claude-foreman`
+> replaces the steps above; the package installs the same `foreman` command.
+
+Then, in the repository you want it to work on:
+
+```bash
+foreman init     # writes foreman.config.yaml + tasks.yaml, detects your check commands
+```
 
 ### Claude credential: subscription or API key
 
@@ -167,28 +199,40 @@ For Entra ID bearer tokens in a PAT variable, set `azureDevOps.tokenType: bearer
 
 ## Running locally
 
+Set a Claude credential and a repository token first (see [Setup](#setup)):
+
 ```bash
 export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # or: export ANTHROPIC_API_KEY=sk-ant-...
 export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: export FOREMAN_AZURE_TOKEN=<PAT>
-
-foreman dry-run                      # full loop, but no push and no PRs
-foreman run                          # process all pending tasks once
-foreman run --task add-health        # just one task
-foreman run --task add-health --retry   # rerun a done / needs-human task from scratch
-foreman watch                        # continuous mode (see below)
-foreman status                       # task states, spend today, last run
 ```
 
 | Command | What it does |
 |---|---|
 | `foreman init [--force]` | Writes an annotated `foreman.config.yaml` and an example `tasks.yaml`, and adds `.foreman/` to `.gitignore`. |
-| `foreman run` | Processes runnable tasks once, writes a report, then exits. |
-| `foreman dry-run` | Same as `run`, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
-| `foreman watch` | Processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
-| `foreman status [--json]` | Shows configured models per role, a cost/call breakdown by model across tracked attempts, per-task status/attempts/cost/PR links, and spend against the daily cap. |
-| `foreman dashboard [--open]` | Writes a static, self-contained `.foreman/dashboard.html` — the same data as `status`, as a page you open in a browser: a spend meter, a model-usage bar chart, and the task table. Nothing is hosted or sent anywhere; `--open` tries to launch it in your default browser. |
-| `foreman dashboard --watch [--open] [--interval <seconds>]` | Keeps rewriting that same file (every 5s by default) while a run is in progress, and the open page reloads itself to match — a live-ish local monitor with no server involved. Stop with Ctrl+C. |
-| `foreman logs [-f] [-n <lines>]` | Prints the end of `.foreman/logs/foreman.log` (40 lines by default). `-f` keeps following it, so you can watch a run that was started in the background from another terminal. |
+| `foreman dry-run [--task <id>]` | The full loop, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
+| `foreman run [--task <id>] [--retry]` | Processes runnable tasks once, writes a report, then exits. `--retry` reruns a done or needs-human task from scratch. |
+| `foreman watch` | Continuous mode: processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
+| `foreman status [--json]` | A snapshot: models per role, spend against the daily cap, usage by model, and each task's status, attempts, cost and PR. |
+| `foreman logs [-f] [-n <lines>]` | The end of the run log (40 lines by default). `-f` keeps following it. |
+| `foreman dashboard [--open] [--watch]` | The same data as `status`, as a local HTML page. See below. |
+
+### Monitoring a run
+
+A run started in the background is easy to watch from a second terminal without
+touching it:
+
+- **`foreman logs -f`** streams `.foreman/logs/foreman.log`: every task,
+  attempt, tool call, check result and PR as it happens.
+- **`foreman status`** is a one-off snapshot of spend, usage by model and task
+  states.
+- **`foreman dashboard --watch --open`** writes `.foreman/dashboard.html` (a
+  spend meter, a model-usage bar chart and the task table) every 5 seconds
+  (`--interval <seconds>`), and the open page reloads itself. Without `--watch`
+  it writes one snapshot. It's a plain local file: nothing is hosted or sent
+  anywhere, and `--open` only launches your default browser. Stop with Ctrl+C.
+
+Usage by model counts every agent call (planner, coder, reviewer, analyst)
+against the model that made it, as a share of estimated cost.
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.
@@ -264,6 +308,8 @@ jobs:
 The run report is also added to the job summary.
 
 Notes:
+- **Version tag:** `@v0` needs a `v0` tag on this repository, which doesn't
+  exist yet. Until it does, pin a commit SHA instead.
 - **CI on foreman PRs:** GitHub does not trigger workflows for PRs opened with
   the default `GITHUB_TOKEN`. If you set `ci.wait: true`, or simply want CI to
   run on foreman's PRs, pass a GitHub App token or PAT as `github-token`.
@@ -325,6 +371,9 @@ PRs foreman opens go through your normal branch policies, so `ci.wait: true`
 works without extra setup. The example pipeline also caches `.foreman/state.json`
 between runs and publishes the run report as a build artifact.
 
+> The `npx claude-foreman` step needs the package on npm. Until it's published,
+> install foreman from a checkout in a script step instead.
+
 ## Running on an always-on server
 
 Run `foreman watch` under a process supervisor. See
@@ -367,10 +416,8 @@ baseBranch: main
 remote: origin
 tasksFile: tasks.yaml
 
-setup:                          # optional; run once per task worktree, before any model call
-  install: pnpm install --frozen-lockfile   # so the agent can run checks itself. If it fails
-                                            # the task stops before spending anything and is
-                                            # retried later with backoff. Same forms as checks.
+setup:                          # optional: run once per task worktree, before any model call
+  install: pnpm install --frozen-lockfile   # so the agent can run checks itself; same forms as checks
 
 checks:                         # run IN ORDER by the runner; first failure stops
   build: npm run build
@@ -441,13 +488,10 @@ tasks:
     checks: [test]            # optional: run only these configured checks (by name), not all of them
 ```
 
-**`checks` on a task:** in a repo with more than one project or area, running
-every configured check on every task wastes time and money on work the task
-never touched (e.g. a second project's install-and-test on a change that
-doesn't involve it). Name a subset of `foreman.config.yaml`'s `checks` to run
-instead — they still run in the order configured there. A name that doesn't
-exist in `checks` fails the task immediately (not retried, no model calls
-spent) rather than discovering the typo mid-run.
+**`checks` on a task:** in a repo with several projects, running every check on
+every task wastes time and money on work the task never touched. Name a subset
+of the configured `checks` to run only those, still in the configured order. An
+unknown name fails the task immediately, with no retries and no model calls.
 
 ### Story docs: giving a task as just a prompt
 
@@ -509,6 +553,23 @@ open issue (or work item) carrying the label/tag becomes a task:
 
 Rerun any finished task with `--task <id> --retry`.
 
+## Using foreman in a team
+
+Only one person has to run foreman. Nobody else has to change how they work.
+
+- **The checked-in files are inert.** `foreman.config.yaml` and `tasks.yaml` do
+  nothing unless someone runs `foreman`, and `.foreman/` (state, logs,
+  worktrees) is git-ignored. The generated files say so at the top.
+- **Its PRs look like any other PR.** They come from `foreman/<id>` branches,
+  carry the `foreman` label, and say they were opened automatically. foreman
+  never merges, so a teammate reviews and merges them through your normal
+  process. Consider requiring an approval from someone other than whoever ran
+  foreman (branch protection or CODEOWNERS).
+- **Keep the backlog out of built images.** `tasks.yaml` can describe internal
+  work. If you build Docker images with `COPY . .`, add `foreman.config.yaml`,
+  `tasks.yaml` and `.foreman/` to `.dockerignore`. `foreman init` warns when it
+  finds a Dockerfile without that exclusion.
+
 ## Safety model
 
 foreman assumes the model can make mistakes, or be steered by malicious
@@ -522,7 +583,7 @@ prompts.
 | File access only inside the task worktree | A `PreToolUse` hook on every tool call resolves paths, including symlinks, and denies anything outside the worktree or inside `.git`. |
 | No edits to protected paths | The same hook denies the write. The diff gate rejects the change before commit and reverts it. |
 | No deleting or skipping tests | The diff gate rejects deleted test files, tests moved out of the suite, a net loss of test cases, added `.skip` / `.only` / `xit` / `@pytest.mark.skip` / `t.Skip` / `#[ignore]` / `@Disabled` markers, and runner flags like `--passWithNoTests`. |
-| Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Bash only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. Planner and reviewer are read-only. |
+| Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Only the coder gets Bash, and it only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. The planner, reviewer and analyst have no Bash at all, and the planner and reviewer are read-only. |
 | A role can be scoped to one folder | The analyst (story docs) has no Bash and can only write inside `docs.dir`; writes anywhere else are denied the same way protected paths are, regardless of whether that path is otherwise protected. |
 | The repo can't loosen the rules | `settingSources: []`, so the target repo's `.claude/` settings and hooks are ignored. |
 | No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, Azure DevOps tokens (`AZURE_DEVOPS_*`, `SYSTEM_ACCESSTOKEN`), npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Claude credential. |
@@ -608,7 +669,8 @@ adds it to `.git/info/exclude`.
 |---|---|
 | `state.json` (+ `.bak`) | Per-task status, attempts, history, cost, PR links; daily spend; runs. Written atomically. |
 | `reports/run-<id>.md` / `.json` | Run report. `latest.md` and `latest.json` point at the newest run. |
-| `logs/foreman.log` | Runner log |
+| `dashboard.html` | The page written by `foreman dashboard` |
+| `logs/foreman.log` | Runner log (read it with `foreman logs`) |
 | `logs/<run-id>/<task>.log` | Full prompts, tool calls and results for each task |
 | `worktrees/` | Task worktrees, removed after each task unless `--keep-worktrees` is set |
 | `lock` | Process lock |
@@ -628,11 +690,13 @@ Layout:
 - `src/loop.ts`: the per-task state machine
 - `src/orchestrator.ts`: queue handling and `watch`
 - `src/claude.ts`: Agent SDK runner, Claude auth selection and tool guard wiring
+- `src/toolguard.ts`: the per-tool-call allow/deny rules
 - `src/safety.ts`: protected paths and the diff gate
 - `src/host.ts`: the repository-host interface (`RepoHost`)
 - `src/git.ts`: the git layer
 - `src/github.ts`, `src/azure.ts`: the GitHub and Azure DevOps host implementations
-- `src/state.ts`: persistence
+- `src/state.ts`: persistence, including the per-call usage ledger
+- `src/report.ts`, `src/dashboard.ts`, `src/logs.ts`: run reports, the HTML dashboard and `foreman logs`
 
 Tests mock Claude and the repository host. git runs for real against temporary
 repositories.
