@@ -92,6 +92,17 @@ describe("tool guard", () => {
     expect(coder()("mystery_end_turn_tool", {}).allow).toBe(false); // unset: still denied
   });
 
+  it("a chained command's denial tells the agent what to do instead, so one denial is enough", () => {
+    // The shape both agents actually sent on a real run.
+    const denied = coder()("Bash", { command: "cd apps/api && cat package.json | head -150; ls src" });
+    expect(denied.allow).toBe(false);
+    const reason = (denied as { reason: string }).reason;
+    expect(reason).toMatch(/shell control characters/);
+    expect(reason).toMatch(/one command per Bash call/);
+    expect(reason).toMatch(/Read, Glob and Grep/);
+    expect(reason).toContain("npm test | npm run lint"); // the commands it may actually run
+  });
+
   it("checkCommand allows exact configured commands even with &&", () => {
     expect(checkCommand("npm ci && npm test", [], ["npm ci && npm test"])).toBeUndefined();
     expect(checkCommand("npm ci && npm test && x", [], ["npm ci && npm test"])).toBeDefined();

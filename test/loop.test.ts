@@ -34,6 +34,11 @@ describe("TaskRunner: happy path", () => {
     expect(agents.byRole("coder")[0]!.readOnly).toBe(false);
     expect(agents.byRole("coder")[0]!.allowedCommands).toEqual(["npm test"]);
     expect(agents.byRole("coder")[0]!.prompt).toContain("1. do the thing"); // plan passed to coder
+    // only the coder is offered Bash; the others can't make calls the guard would have to deny
+    expect(agents.byRole("coder")[0]!.allowBash).toBe(true);
+    expect(agents.byRole("planner")[0]!.allowBash).toBe(false);
+    expect(agents.byRole("reviewer")[0]!.allowBash).toBe(false);
+    expect(agents.byRole("coder")[0]!.prompt).toMatch(/one command per Bash call/);
 
     expect(world.commits).toHaveLength(1);
     expect(world.commits[0]).toMatch(/^foreman\(t1\): Add feature/);

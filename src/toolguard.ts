@@ -127,7 +127,13 @@ export function checkCommand(cmd: string, prefixes: string[], exact: string[] = 
   if (exact.some((e) => e.trim().replace(/\s+/g, " ") === normalized)) return undefined;
   const stripped = normalized.replace(/\s+2>&1$/, "");
   if (/[;&|`$<>\n\r(){}]/.test(stripped)) {
-    return "shell control characters (; & | ` $ < > ( ) { }) are not allowed; run one allowed command at a time";
+    // Say everything needed to get it right on the next call: each denial is a paid turn.
+    return (
+      "shell control characters (; & | ` $ < > ( ) { }) are not allowed. Run exactly one command per Bash call, " +
+      "with no cd, &&, pipes or redirection (the working directory is already the repo root). " +
+      "To read or search files use the Read, Glob and Grep tools instead of cat, head, find or grep." +
+      (prefixes.length ? ` Allowed commands: ${prefixes.join(" | ")}` : "")
+    );
   }
   const ok = prefixes.some((p) => {
     const pre = p.trim().replace(/\s+/g, " ");

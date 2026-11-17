@@ -594,8 +594,10 @@ export class TaskRunner {
       systemPrompt: d.roles[role].prompt,
       prompt,
       cwd: ctx.dir,
-      // The analyst only ever edits a docs file; it never needs Bash.
-      allowBash: role === "analyst" ? false : d.config.agent.allowBash,
+      // Only the coder runs commands (the checks). The others work with
+      // Read/Glob/Grep (the reviewer is handed the diff); offering them Bash
+      // only invites calls the guard has to deny, each a wasted paid turn.
+      allowBash: role === "coder" && d.config.agent.allowBash,
       allowedCommands: role === "coder" ? [...d.config.checks.map((c) => c.run), ...d.config.agent.extraAllowedCommands] : [],
       isProtected: d.isProtected,
       maxTurns: d.config.limits.maxTurnsPerCall,

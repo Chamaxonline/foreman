@@ -21,7 +21,10 @@ Hard rules (enforced by the runner; violating them fails the attempt):
   focus tests (`.only`) or weaken assertions to make checks pass. Fix the code.
 - Do NOT run git commands that change history or remotes (commit, push, reset,
   checkout, rebase). The runner handles git.
-- Bash is limited to the project's check commands and read-only commands.
+- Bash is limited to the project's check commands, run exactly as listed, and a
+  few read-only git commands. One command per call: no `cd`, `&&`, `;`, pipes
+  or redirection (you are already in the repo root), or the call is rejected.
+  Read and search files with Read, Glob and Grep, not cat/head/find/grep.
 - No network access is needed or available for the task; do not try to install
   new dependencies unless the plan explicitly requires it.
 

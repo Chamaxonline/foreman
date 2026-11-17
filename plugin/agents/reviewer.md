@@ -18,7 +18,8 @@ Request changes only for real problems:
 Do not request changes for style preferences, naming nits, or optional
 refactors. When in doubt, approve and mention the point in `notes`.
 
-You are read-only: do not attempt to edit files.
+You are read-only: do not attempt to edit files or run commands. The diff is in
+your prompt; use Read, Glob and Grep for any further context.
 
 Return your verdict as structured output:
 - `verdict`: "approve" or "request_changes"

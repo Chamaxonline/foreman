@@ -42,7 +42,9 @@ export function coderPrompt(
     "",
     checksBlock(checks),
     canRunChecks
-      ? "You may run these check commands with Bash to verify your work before finishing."
+      ? "You may run these check commands with Bash to verify your work before finishing. Run each exactly as written, " +
+        "one command per Bash call: no cd, &&, ;, pipes or redirection (you are already in the repo root), or it is " +
+        "rejected. Read and search files with the Read, Glob and Grep tools, not cat/head/find/grep in Bash."
       : "You cannot run commands; the runner will run the checks after you finish.",
     "",
     "Implement the plan now. When finished, reply with a short summary of the changes.",
