@@ -49,11 +49,12 @@ export class ShellCheckRunner implements CheckRunner {
     private readonly setupCommands: CheckCommand[] = [],
   ) {}
 
-  run(dir: string, signal: AbortSignal, only?: string[]): Promise<CheckRun> {
+  // async, so a bad `only` name rejects instead of throwing synchronously
+  async run(dir: string, signal: AbortSignal, only?: string[]): Promise<CheckRun> {
     return this.execAll(selectChecks(this.checks, only), dir, signal);
   }
 
-  setup(dir: string, signal: AbortSignal): Promise<CheckRun> {
+  async setup(dir: string, signal: AbortSignal): Promise<CheckRun> {
     return this.execAll(this.setupCommands, dir, signal);
   }
 
