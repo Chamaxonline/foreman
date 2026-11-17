@@ -22,6 +22,15 @@ export interface AttemptRecord {
   at: string;
 }
 
+/** One agent call (planner, coder, reviewer, analyst): the unit model usage is counted in. */
+export interface UsageRecord {
+  role: string;
+  model: string;
+  costUsd: number;
+  runId?: string;
+  at: string;
+}
+
 export interface TaskState {
   id: string;
   status: TaskStatus;
@@ -44,6 +53,13 @@ export interface TaskState {
   /** Do not pick this task up again before this time (backoff). */
   notBefore?: string;
   history: AttemptRecord[];
+  /** Every agent call with the model that made it. Absent in state written by older versions. */
+  usage?: UsageRecord[];
+}
+
+/** A task's model usage: the per-call ledger, or attempt history for state that predates it. */
+export function usageOf(t: TaskState): Array<{ model: string; costUsd: number }> {
+  return t.usage?.length ? t.usage : t.history;
 }
 
 export interface RunRecord {
@@ -80,6 +96,7 @@ export function nextDayStart(d: Date, boundary: DayBoundary = "utc"): Date {
 }
 
 const MAX_HISTORY = 30;
+const MAX_USAGE = 200;
 const MAX_RUNS = 100;
 const MAX_SPEND_DAYS = 90;
 /** After this many crash recoveries a task is marked failed rather than retried forever. */
@@ -195,20 +212,30 @@ export class StateStore {
     return this.data.spend[dayKey(this.now(), this.boundary)] ?? 0;
   }
 
-  async addSpend(usd: number, taskId?: string, runId?: string): Promise<void> {
-    if (!(usd > 0)) return;
-    const key = dayKey(this.now(), this.boundary);
-    this.data.spend[key] = round((this.data.spend[key] ?? 0) + usd);
+  /** `usage` also logs the call against the task, even a zero-cost one, so model usage counts every call. */
+  async addSpend(usd: number, taskId?: string, runId?: string, usage?: { role: string; model: string }): Promise<void> {
+    const cost = usd > 0 ? usd : 0;
+    const logCall = Boolean(usage && taskId);
+    if (cost === 0 && !logCall) return;
+    if (cost > 0) {
+      const key = dayKey(this.now(), this.boundary);
+      this.data.spend[key] = round((this.data.spend[key] ?? 0) + cost);
+      if (runId) {
+        const r = this.data.runs.find((x) => x.id === runId);
+        if (r) r.costUsd = round(r.costUsd + cost);
+      }
+      pruneSpend(this.data.spend);
+    }
     if (taskId) {
       await this.ensure(taskId);
       const t = this.data.tasks[taskId]!;
-      t.costUsd = round(t.costUsd + usd);
+      if (cost > 0) t.costUsd = round(t.costUsd + cost);
+      if (usage) {
+        const ledger = (t.usage ??= []);
+        ledger.push({ ...usage, costUsd: round(cost), ...(runId ? { runId } : {}), at: this.now().toISOString() });
+        if (ledger.length > MAX_USAGE) ledger.splice(0, ledger.length - MAX_USAGE);
+      }
     }
-    if (runId) {
-      const r = this.data.runs.find((x) => x.id === runId);
-      if (r) r.costUsd = round(r.costUsd + usd);
-    }
-    pruneSpend(this.data.spend);
     await this.save();
   }
 
@@ -332,6 +359,7 @@ function normalize(d: StateData): StateData {
   const out = { ...emptyState(), ...d };
   for (const t of Object.values(out.tasks)) {
     t.history ??= [];
+    t.usage ??= [];
     t.recoveries ??= 0;
     t.attempts ??= 0;
     t.costUsd ??= 0;

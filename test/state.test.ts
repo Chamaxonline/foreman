@@ -9,6 +9,7 @@ import {
   MAX_RECOVERIES,
   nextDayStart,
   StateStore,
+  usageOf,
 } from "../src/state.js";
 
 let dir: string;
@@ -139,6 +140,30 @@ describe("spend tracking", () => {
     await s.addSpend(-1);
     await s.addSpend(Number.NaN);
     expect(s.spentToday()).toBe(0);
+  });
+
+  it("logs each agent call against its task, even a zero-cost one", async () => {
+    const s = await StateStore.open(dir);
+    await s.addSpend(0.25, "a", "run1", { role: "planner", model: "opus" });
+    await s.addSpend(0, "a", "run1", { role: "coder", model: "sonnet" });
+    await s.addSpend(0.5, "a", "run1"); // no usage given: counts as spend, not as a call
+    const t = s.get("a")!;
+    expect(t.costUsd).toBe(0.75);
+    expect(t.usage).toMatchObject([
+      { role: "planner", model: "opus", costUsd: 0.25, runId: "run1" },
+      { role: "coder", model: "sonnet", costUsd: 0, runId: "run1" },
+    ]);
+    expect(usageOf(t)).toBe(t.usage);
+
+    const s2 = await StateStore.open(dir); // survives restart
+    expect(s2.get("a")!.usage).toHaveLength(2);
+  });
+
+  it("usageOf falls back to attempt history for state from before the ledger existed", async () => {
+    const s = await StateStore.open(dir);
+    await s.recordAttempt("old", { n: 1, model: "sonnet", outcome: "pass", summary: "", costUsd: 0.2 });
+    const t = s.get("old")!;
+    expect(usageOf(t)).toBe(t.history);
   });
 
   it("dayKey / nextDayStart helpers", () => {

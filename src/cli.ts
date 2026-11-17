@@ -11,7 +11,7 @@ import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
 import { createRuntime } from "./runtime.js";
-import { acquireLock, LockError, StateStore, STATE_DIR } from "./state.js";
+import { acquireLock, LockError, StateStore, STATE_DIR, usageOf } from "./state.js";
 import { loadTasks, sortByPriority, TasksError } from "./tasks.js";
 import { configTemplate, detectProject, TASKS_TEMPLATE } from "./templates.js";
 
@@ -275,10 +275,9 @@ async function loadStatusSummary(repoDir: string) {
     }
   }
   const lastRun = snap.runs.at(-1);
-  // Lifetime-ish: every attempt still tracked for every task currently in
-  // state (trimmed to the last MAX_HISTORY attempts per task; old runs
-  // rotate out of this, not just out of this run).
-  const modelUsage = summarizeModelUsage(Object.values(snap.tasks).map((t) => t.history));
+  // Lifetime-ish: every agent call still tracked for every task currently in
+  // state (the ledger is capped per task, so old calls eventually rotate out).
+  const modelUsage = summarizeModelUsage(Object.values(snap.tasks).map(usageOf));
   return {
     repo: repoDir,
     tasksFile: config.tasksFile,
@@ -305,9 +304,9 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   if (lastRun) console.log(`Last run:    ${lastRun.id} ($${lastRun.costUsd.toFixed(2)}${lastRun.dryRun ? ", dry run" : ""})`);
   console.log("");
   if (modelUsage.length) {
-    console.log("Model usage (tracked attempts across all tasks):");
+    console.log("Model usage (tracked agent calls across all tasks):");
     for (const u of modelUsage) {
-      console.log(`  ${u.model.padEnd(10)} ${String(u.attempts).padStart(3)} calls  $${u.costUsd.toFixed(2).padStart(6)}  ${u.pctOfCost.toFixed(1).padStart(5)}%`);
+      console.log(`  ${u.model.padEnd(10)} ${String(u.calls).padStart(3)} calls  $${u.costUsd.toFixed(2).padStart(6)}  ${u.pctOfCost.toFixed(1).padStart(5)}%`);
     }
     console.log("");
   }

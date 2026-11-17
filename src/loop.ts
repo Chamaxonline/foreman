@@ -590,7 +590,7 @@ export class TaskRunner {
       onEvent: ctx.tlog,
       ...extra,
     });
-    await d.state.addSpend(r.costUsd, ctx.task.id, d.runId);
+    await d.state.addSpend(r.costUsd, ctx.task.id, d.runId, { role, model });
     ctx.tlog(`[${role} result] ok=${r.ok} subtype=${r.subtype} cost=$${r.costUsd.toFixed(4)}\n${r.text}`);
     return r;
   }

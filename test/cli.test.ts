@@ -80,8 +80,23 @@ describe("cli", () => {
     const j = JSON.parse(out.join("\n"));
     expect(j.models).toMatchObject({ planner: "opus", coder: "sonnet" });
     expect(j.modelUsage).toEqual([
-      { model: "opus", attempts: 1, costUsd: 0.3, pctOfCost: 75 },
-      { model: "sonnet", attempts: 1, costUsd: 0.1, pctOfCost: 25 },
+      { model: "opus", calls: 1, costUsd: 0.3, pctOfCost: 75 },
+      { model: "sonnet", calls: 1, costUsd: 0.1, pctOfCost: 25 },
+    ]);
+  });
+
+  it("status counts every agent call by its own model, not just the coder's", async () => {
+    await main(["init", "--repo", dir]);
+    const state = await StateStore.open(path.join(dir, ".foreman"));
+    await state.addSpend(0.13, "example-readme-badge", "r1", { role: "planner", model: "opus" });
+    await state.addSpend(0.14, "example-readme-badge", "r1", { role: "coder", model: "sonnet" });
+    await state.addSpend(0.2, "example-readme-badge", "r1", { role: "reviewer", model: "opus" });
+    out = [];
+    expect(await main(["status", "--repo", dir, "--json"])).toBe(0);
+    const j = JSON.parse(out.join("\n"));
+    expect(j.modelUsage).toEqual([
+      { model: "opus", calls: 2, costUsd: 0.33, pctOfCost: 70.2 },
+      { model: "sonnet", calls: 1, costUsd: 0.14, pctOfCost: 29.8 },
     ]);
   });
 

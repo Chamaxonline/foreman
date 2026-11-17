@@ -128,10 +128,10 @@ export class Orchestrator {
       dryRun: d.dryRun,
       totalCostUsd: d.state.runCost(run.id),
       spentTodayUsd: d.state.spentToday(),
-      // Scoped to attempts made during this run, not a task's full history
-      // (which can carry attempts from an earlier run on a --retry or a
-      // crash-recovered task).
-      modelUsage: summarizeModelUsage(outcomes.map((o) => o.history.filter((h) => h.at >= startedAt))),
+      // Scoped to agent calls made during this run (by run id), not a task's
+      // whole ledger, which can hold calls from an earlier run on a --retry
+      // or a crash-recovered task.
+      modelUsage: summarizeModelUsage(outcomes.map((o) => (d.state.get(o.taskId)?.usage ?? []).filter((u) => u.runId === run.id))),
       ...(stoppedReason ? { stoppedReason } : {}),
       tasks: outcomes,
     };

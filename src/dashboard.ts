@@ -64,7 +64,7 @@ function modelBars(usage: ModelUsage[]): string {
         </div>
         <div class="bar-label">
           <strong>${esc(u.model)}</strong>
-          <span class="muted">${u.attempts} call${u.attempts === 1 ? "" : "s"} · $${u.costUsd.toFixed(2)} · ${u.pctOfCost.toFixed(1)}%</span>
+          <span class="muted">${u.calls} call${u.calls === 1 ? "" : "s"} · $${u.costUsd.toFixed(2)} · ${u.pctOfCost.toFixed(1)}%</span>
         </div>
       </div>`;
     })

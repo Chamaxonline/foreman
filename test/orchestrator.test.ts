@@ -190,26 +190,24 @@ describe("Orchestrator.watch with usage limits", () => {
 });
 
 describe("Orchestrator.runOnce: model usage", () => {
-  it("includes a run report's model usage, scoped to attempts made during this run", async () => {
+  it("includes a run report's model usage, scoped to agent calls made during this run", async () => {
     const tasks = [makeTask({ id: "a" }), makeTask({ id: "b" })];
     const { orch } = await setup({
       tasks,
       exec: async (t, s) => {
+        const runId = s.snapshot().runs.at(-1)!.id;
         await s.updateTask(t.id, { status: "done" });
-        const history =
-          t.id === "a"
-            ? [
-                { n: 1, model: "sonnet", outcome: "pass" as const, summary: "", costUsd: 0.1, at: "2026-04-01T00:00:00.000Z" }, // earlier run: excluded
-                { n: 2, model: "opus", outcome: "pass" as const, summary: "", costUsd: 0.4, at: "2026-05-01T10:00:00.000Z" },
-              ]
-            : [{ n: 1, model: "opus", outcome: "pass" as const, summary: "", costUsd: 0.2, at: "2026-05-01T10:00:00.000Z" }];
-        return { taskId: t.id, title: t.title, status: "done", dryRun: false, attempts: history.length, costUsd: 0, durationMs: 0, models: [], checks: [], history };
+        if (t.id === "a") {
+          await s.addSpend(0.1, "a", "an-earlier-run", { role: "coder", model: "sonnet" }); // excluded
+          await s.addSpend(0.4, "a", runId, { role: "coder", model: "opus" });
+        } else {
+          await s.addSpend(0.2, "b", runId, { role: "reviewer", model: "opus" });
+        }
+        return outcome(t, "done");
       },
     });
     const report = await orch.runOnce();
-    expect(report.modelUsage).toEqual([
-      { model: "opus", attempts: 2, costUsd: 0.6, pctOfCost: 100 },
-    ]);
+    expect(report.modelUsage).toEqual([{ model: "opus", calls: 2, costUsd: 0.6, pctOfCost: 100 }]);
   });
 
   it("is [] when nothing has any attempt history", async () => {

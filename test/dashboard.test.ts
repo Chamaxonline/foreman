@@ -7,7 +7,7 @@ function summary(over: Partial<DashboardSummary> = {}): DashboardSummary {
     models: { planner: "opus", coder: "sonnet" },
     spentTodayUsd: 1.5,
     dailyCapUsd: 10,
-    modelUsage: [{ model: "opus", attempts: 2, costUsd: 1.0, pctOfCost: 66.7 }, { model: "sonnet", attempts: 1, costUsd: 0.5, pctOfCost: 33.3 }],
+    modelUsage: [{ model: "opus", calls: 2, costUsd: 1.0, pctOfCost: 66.7 }, { model: "sonnet", calls: 1, costUsd: 0.5, pctOfCost: 33.3 }],
     tasks: [{ id: "t1", title: "Add thing", status: "done", attempts: 2, costUsd: 1.5, prUrl: "https://example.com/pr/1" }],
     ...over,
   };
@@ -39,7 +39,7 @@ describe("renderDashboardHtml", () => {
   });
 
   it("assigns model colors by first appearance, not alphabetically, and cycles past 8 models", () => {
-    const usage = Array.from({ length: 10 }, (_, i) => ({ model: `m${i}`, attempts: 1, costUsd: 1, pctOfCost: 10 }));
+    const usage = Array.from({ length: 10 }, (_, i) => ({ model: `m${i}`, calls: 1, costUsd: 1, pctOfCost: 10 }));
     const html = renderDashboardHtml(summary({ modelUsage: usage }), "x");
     expect(html).toContain("var(--m0)"); // first model
     expect(html).toContain("var(--m7)"); // 8th model, last distinct slot

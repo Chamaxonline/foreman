@@ -7,16 +7,16 @@ function rec(model: string, costUsd: number, over: Partial<AttemptRecord> = {}):
 }
 
 describe("summarizeModelUsage", () => {
-  it("totals attempts and cost per model across multiple histories, sorted by cost desc", () => {
+  it("totals calls and cost per model across multiple lists, sorted by cost desc", () => {
     const usage = summarizeModelUsage([
       [rec("sonnet", 0.1), rec("sonnet", 0.2), rec("opus", 1.0)],
       [rec("opus", 0.5), rec("haiku", 0.05)],
     ]);
     // total cost = 1.85: opus 1.5/1.85=81.08%, sonnet 0.3/1.85=16.22%, haiku 0.05/1.85=2.70%
     expect(usage).toEqual([
-      { model: "opus", attempts: 2, costUsd: 1.5, pctOfCost: 81.1 },
-      { model: "sonnet", attempts: 2, costUsd: 0.3, pctOfCost: 16.2 },
-      { model: "haiku", attempts: 1, costUsd: 0.05, pctOfCost: 2.7 },
+      { model: "opus", calls: 2, costUsd: 1.5, pctOfCost: 81.1 },
+      { model: "sonnet", calls: 2, costUsd: 0.3, pctOfCost: 16.2 },
+      { model: "haiku", calls: 1, costUsd: 0.05, pctOfCost: 2.7 },
     ]);
     // percentages don't need to add to exactly 100 after rounding, but should be close
     const sum = usage.reduce((s, u) => s + u.pctOfCost, 0);
@@ -28,12 +28,12 @@ describe("summarizeModelUsage", () => {
     expect(summarizeModelUsage([])).toEqual([]);
     expect(summarizeModelUsage([[]])).toEqual([]);
     expect(summarizeModelUsage([[rec("sonnet", 0), rec("opus", 0)]])).toEqual([
-      { model: "opus", attempts: 1, costUsd: 0, pctOfCost: 0 },
-      { model: "sonnet", attempts: 1, costUsd: 0, pctOfCost: 0 },
+      { model: "opus", calls: 1, costUsd: 0, pctOfCost: 0 },
+      { model: "sonnet", calls: 1, costUsd: 0, pctOfCost: 0 },
     ]);
   });
 
-  it("breaks cost ties by attempt count, then alphabetically", () => {
+  it("breaks cost ties by call count, then alphabetically", () => {
     const usage = summarizeModelUsage([[rec("zebra", 1), rec("alpha", 1), rec("mid", 1), rec("mid", 0)]]);
     expect(usage.map((u) => u.model)).toEqual(["mid", "alpha", "zebra"]);
   });
@@ -41,7 +41,7 @@ describe("summarizeModelUsage", () => {
 
 describe("modelUsageTable", () => {
   it("renders a markdown table", () => {
-    const usage: ModelUsage[] = [{ model: "opus", attempts: 3, costUsd: 1.23, pctOfCost: 66.7 }];
+    const usage: ModelUsage[] = [{ model: "opus", calls: 3, costUsd: 1.23, pctOfCost: 66.7 }];
     const table = modelUsageTable(usage);
     expect(table).toContain("| Model | Calls | Cost | % of cost |");
     expect(table).toContain("| `opus` | 3 | $1.23 | 66.7% |");

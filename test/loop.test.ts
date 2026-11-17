@@ -49,6 +49,9 @@ describe("TaskRunner: happy path", () => {
     expect(st.status).toBe("done");
     expect(st.costUsd).toBeCloseTo(0.3);
     expect(state.spentToday()).toBeCloseTo(0.3);
+    // every call is logged against the model that made it, planner and reviewer included
+    expect(st.usage!.map((u) => `${u.role}:${u.model}`)).toEqual(["planner:opus", "coder:sonnet", "reviewer:opus"]);
+    expect(st.usage!.reduce((sum, u) => sum + u.costUsd, 0)).toBeCloseTo(st.costUsd);
     expect(world.removed).toBe(1); // worktree cleaned up
   });
 
