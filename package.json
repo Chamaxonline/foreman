@@ -5,6 +5,14 @@
   "type": "module",
   "license": "MIT",
   "author": "chamathran",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chamaxonline/foreman.git"
+  },
+  "homepage": "https://github.com/Chamaxonline/foreman#readme",
+  "bugs": {
+    "url": "https://github.com/Chamaxonline/foreman/issues"
+  },
   "keywords": [
     "claude",
     "agent",

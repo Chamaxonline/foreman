@@ -41,9 +41,8 @@ as a PR for a human to review.
 ## Quick start
 
 ```bash
-# 1. Install (not on npm yet; see Setup)
-git clone https://github.com/Chamaxonline/foreman && cd foreman
-npm install && npm run build && npm link
+# 1. Install
+npm i -g claude-foreman
 
 # 2. In the repository you want it to work on
 cd your-repo
@@ -120,13 +119,16 @@ DevOps (Services, or Server with an explicit `azureDevOps.orgUrl`).
 ### Install
 
 ```bash
+npm i -g claude-foreman     # installs the `foreman` command
+```
+
+Or run it from source:
+
+```bash
 git clone https://github.com/Chamaxonline/foreman && cd foreman
 npm install && npm run build
 npm link            # puts a `foreman` command on your PATH
 ```
-
-> foreman is not published to npm yet. Once it is, `npm i -g claude-foreman`
-> replaces the steps above; the package installs the same `foreman` command.
 
 Then, in the repository you want it to work on:
 
@@ -308,8 +310,8 @@ jobs:
 The run report is also added to the job summary.
 
 Notes:
-- **Version tag:** `@v0` needs a `v0` tag on this repository, which doesn't
-  exist yet. Until it does, pin a commit SHA instead.
+- **Version tag:** `@v0` follows the latest `0.x` release. For production, pin
+  a full commit SHA instead.
 - **CI on foreman PRs:** GitHub does not trigger workflows for PRs opened with
   the default `GITHUB_TOKEN`. If you set `ci.wait: true`, or simply want CI to
   run on foreman's PRs, pass a GitHub App token or PAT as `github-token`.
@@ -370,10 +372,6 @@ Setup:
 PRs foreman opens go through your normal branch policies, so `ci.wait: true`
 works without extra setup. The example pipeline also caches `.foreman/state.json`
 between runs and publishes the run report as a build artifact.
-
-> The `npx claude-foreman` step needs the package on npm. Until it's published,
-> install foreman from a checkout in a script step instead.
-
 ## Running on an always-on server
 
 Run `foreman watch` under a process supervisor. See
