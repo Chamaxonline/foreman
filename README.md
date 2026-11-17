@@ -366,6 +366,11 @@ baseBranch: main
 remote: origin
 tasksFile: tasks.yaml
 
+setup:                          # optional; run once per task worktree, before any model call
+  install: pnpm install --frozen-lockfile   # so the agent can run checks itself. If it fails
+                                            # the task stops before spending anything and is
+                                            # retried later with backoff. Same forms as checks.
+
 checks:                         # run IN ORDER by the runner; first failure stops
   build: npm run build
   lint: npm run lint

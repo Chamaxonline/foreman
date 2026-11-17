@@ -65,6 +65,16 @@ pr: { labels: [bot, foreman] }
     expect(() => parseConfig(`checks: [`)).toThrow(/invalid YAML/);
   });
 
+  it("setup defaults to none and accepts the same map or list forms as checks", () => {
+    expect(parseConfig(`checks: { test: npm test }`).setup).toEqual([]);
+    expect(parseConfig(`checks: { test: npm test }\nsetup: { install: pnpm install --frozen-lockfile }`).setup).toEqual([
+      { name: "install", run: "pnpm install --frozen-lockfile" },
+    ]);
+    expect(
+      parseConfig(`checks: { test: npm test }\nsetup:\n  - { name: install, run: npm ci, timeoutMinutes: 20 }`).setup,
+    ).toEqual([{ name: "install", run: "npm ci", timeoutMinutes: 20 }]);
+  });
+
   it("accepts docs and analyst model overrides", () => {
     const cfg = parseConfig(`
 checks: { test: npm test }

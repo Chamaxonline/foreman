@@ -183,7 +183,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
   const agents =
     opts.agents ??
     new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox, auth });
-  const checks = new ShellCheckRunner(config.checks, config.limits.checkTimeoutMinutes, config.agent.envPassthrough);
+  const checks = new ShellCheckRunner(config.checks, config.limits.checkTimeoutMinutes, config.agent.envPassthrough, config.setup);
   const gate = new SafetyGate(isProtected);
   const tasksPath = path.join(repoDir, config.tasksFile);
 

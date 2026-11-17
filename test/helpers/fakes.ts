@@ -145,6 +145,16 @@ export class FakeChecks implements CheckRunner {
     this.onlyCalls.push(only);
     return this.script(++this.runs);
   }
+  setups = 0;
+  /** What `setup()` returns; set to a failing run to simulate a broken install. */
+  setupResult: CheckRun = { ok: true, results: [], failureOutput: "" };
+  /** Runs at the start of every `setup()`, e.g. to record what has happened so far. */
+  onSetup?: () => void;
+  async setup(): Promise<CheckRun> {
+    this.setups++;
+    this.onSetup?.();
+    return this.setupResult;
+  }
 }
 
 export function failingRun(output = "FAIL src/a.test.ts\n  expected 1 to be 2"): CheckRun {

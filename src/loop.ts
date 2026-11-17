@@ -251,6 +251,19 @@ export class TaskRunner {
     const wt = await d.git.createWorktree(task.id);
     const ctx: Ctx = { ...base, task, dir: wt.dir, baseSha: wt.baseSha, plan: "", lastChecks: [], lastError: "" };
 
+    // ---- setup: install dependencies etc. so the agent can run checks itself ----
+    const setup = await d.checks.setup(ctx.dir, ctx.signal);
+    if (!setup.ok) {
+      if (ctx.signal.aborted) return this.stopForLimit(ctx, "time");
+      const bad = setup.results.find((r) => !r.ok);
+      ctx.tlog(`[setup failed]\n${setup.failureOutput}`);
+      // Before any model call, so nothing was spent; retried later with backoff like other infrastructure errors.
+      throw new TransientError(
+        `setup command failed: ${bad?.command ?? "(unknown)"} (exit ${bad?.code ?? "?"}${bad?.timedOut ? ", timed out" : ""}): ${lastLine(bad?.output ?? "")}`,
+      );
+    }
+    if (setup.results.length) d.log.info(`  ✔ setup: ${setup.results.map((r) => r.command).join(", ")}`);
+
     // ---- 0. story doc (optional) -----------------------------------------------
     if (cfg.docs.enabled) {
       const r = await this.ensureStory(ctx, task);
@@ -788,6 +801,12 @@ function uniquePaths(v: Array<{ path: string }>): string[] {
 
 function firstLine(s: string): string {
   const line = s.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("$") && !l.startsWith("(exit")) ?? s.trim();
+  return line.slice(0, 200);
+}
+
+/** The last non-empty line: for install/build output that is where the actual error is. */
+function lastLine(s: string): string {
+  const line = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).at(-1) ?? "";
   return line.slice(0, 200);
 }
 

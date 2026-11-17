@@ -567,3 +567,35 @@ describe("TaskRunner: task.checks (run a subset of configured checks)", () => {
     expect(made.state.get("t1")!.status).toBe("failed");
   });
 });
+
+describe("TaskRunner: setup (install dependencies in the worktree)", () => {
+  it("runs setup once in the new worktree, before any agent call", async () => {
+    let world!: World;
+    const checks = new FakeChecks();
+    const agents = new FakeAgents({ coder: () => (world.edit("src/a.ts"), {}) });
+    let agentCallsAtSetup = -1;
+    checks.onSetup = () => {
+      agentCallsAtSetup = agents.calls.length;
+    };
+    const made = await makeDeps({ checks, agents });
+    world = made.world;
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out.status).toBe("done");
+    expect(checks.setups).toBe(1);
+    expect(agentCallsAtSetup).toBe(0);
+  });
+
+  it("a failing setup stops the task before any agent call and retries later", async () => {
+    const checks = new FakeChecks();
+    checks.setupResult = failingRun("ERR_PNPM_OUTDATED_LOCKFILE\nlockfile is out of date");
+    const agents = new FakeAgents();
+    const made = await makeDeps({ checks, agents });
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out.status).toBe("error");
+    expect(out.reason).toMatch(/setup command failed/);
+    expect(out.reason).toMatch(/lockfile is out of date/);
+    expect(agents.calls).toHaveLength(0);
+    expect(made.world.removed).toBe(1); // worktree cleaned up
+    expect(made.state.get("t1")).toMatchObject({ status: "pending", errorCount: 1, costUsd: 0 });
+  });
+});

@@ -59,6 +59,12 @@ export function configTemplate(p: DetectedProject, baseBranch = "main"): string 
 baseBranch: ${baseBranch}
 tasksFile: tasks.yaml
 
+# Optional: commands run once in each fresh task worktree before any model is
+# called, usually the dependency install, so the agent can run checks itself.
+# If one fails the task stops before anything is spent and is retried later.
+# setup:
+#   install: "npm ci"
+
 # Commands the RUNNER executes, in order, after each coding attempt.
 # A task only ships when all of them exit 0. Agents can never edit these
 # commands or the files that define them.

@@ -16,12 +16,20 @@ const checkSchema = z.object({
  * `{ name, run, timeoutMinutes }` objects. Both normalize to the list form.
  * Order is preserved: checks run in the order they are declared.
  */
-const checksSchema = z
+const commandList = z
   .union([z.record(z.string(), z.string().min(1)), z.array(checkSchema)])
   .transform((v) =>
     Array.isArray(v) ? v : Object.entries(v).map(([name, run]) => ({ name, run })),
-  )
-  .refine((v) => v.length > 0, "at least one check command is required");
+  );
+
+const checksSchema = commandList.refine((v) => v.length > 0, "at least one check command is required");
+
+/**
+ * Commands run once in each fresh task worktree before any model is called
+ * (typically the dependency install), so the agent can run checks itself.
+ * Same shape as `checks`; may be omitted.
+ */
+const setupSchema = commandList.default([]);
 
 const modelsSchema = z
   .object({
@@ -152,6 +160,7 @@ export const configSchema = z.object({
   baseBranch: z.string().min(1).default("main"),
   remote: z.string().min(1).default("origin"),
   tasksFile: z.string().default("tasks.yaml"),
+  setup: setupSchema,
   checks: checksSchema,
   models: modelsSchema,
   limits: limitsSchema,

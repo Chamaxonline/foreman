@@ -61,6 +61,27 @@ describe("ShellCheckRunner", () => {
     const runner = new ShellCheckRunner([{ name: "build", run: ok }], 5);
     await expect(runner.run(process.cwd(), signal(), ["nope"])).rejects.toThrow(UnknownCheckError);
   });
+
+  it("setup runs its own commands, not the checks, and is trivially ok when none are configured", async () => {
+    const none = new ShellCheckRunner([{ name: "build", run: fail }], 5);
+    expect(await none.setup(process.cwd(), signal())).toEqual({ ok: true, results: [], failureOutput: "" });
+
+    const runner = new ShellCheckRunner([{ name: "build", run: fail }], 5, [], [{ name: "install", run: ok }]);
+    const setup = await runner.setup(process.cwd(), signal());
+    expect(setup.ok).toBe(true);
+    expect(setup.results.map((r) => r.name)).toEqual(["install"]);
+  });
+
+  it("setup stops at the first failing command and reports it", async () => {
+    const runner = new ShellCheckRunner([{ name: "build", run: ok }], 5, [], [
+      { name: "install", run: fail },
+      { name: "generate", run: ok },
+    ]);
+    const setup = await runner.setup(process.cwd(), signal());
+    expect(setup.ok).toBe(false);
+    expect(setup.results.map((r) => r.name)).toEqual(["install"]);
+    expect(setup.failureOutput).toContain("boom");
+  });
 });
 
 describe("formatFailures / checksSummary", () => {

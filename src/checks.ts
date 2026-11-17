@@ -26,6 +26,8 @@ export interface CheckRunner {
    * normal declared order, instead of every configured check.
    */
   run(dir: string, signal: AbortSignal, only?: string[]): Promise<CheckRun>;
+  /** Runs the configured `setup` commands in a fresh worktree. Trivially ok when none are configured. */
+  setup(dir: string, signal: AbortSignal): Promise<CheckRun>;
   readonly checks: CheckCommand[];
 }
 
@@ -44,10 +46,18 @@ export class ShellCheckRunner implements CheckRunner {
     readonly checks: CheckCommand[],
     private readonly defaultTimeoutMinutes: number,
     private readonly envPassthrough: string[] = [],
+    private readonly setupCommands: CheckCommand[] = [],
   ) {}
 
-  async run(dir: string, signal: AbortSignal, only?: string[]): Promise<CheckRun> {
-    const toRun = selectChecks(this.checks, only);
+  run(dir: string, signal: AbortSignal, only?: string[]): Promise<CheckRun> {
+    return this.execAll(selectChecks(this.checks, only), dir, signal);
+  }
+
+  setup(dir: string, signal: AbortSignal): Promise<CheckRun> {
+    return this.execAll(this.setupCommands, dir, signal);
+  }
+
+  private async execAll(toRun: CheckCommand[], dir: string, signal: AbortSignal): Promise<CheckRun> {
     const env = agentEnv(process.env, this.envPassthrough);
     for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]) delete env[k];
     const results: CheckResult[] = [];
