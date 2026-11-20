@@ -199,6 +199,56 @@ describe("cli", () => {
     expect(await readFile(path.join(dir, "docs", "stories", "pdf-export.md"), "utf8")).toBe("# mine\n");
   });
 
+  it("prototype and approve need a story id, and prototype needs a story to exist", async () => {
+    await main(["init", "--repo", dir]);
+    out = [];
+    expect(await main(["prototype", "--repo", dir])).toBe(2);
+    expect(out.join("\n")).toMatch(/Give the story id/);
+    expect(await main(["approve", "--repo", dir])).toBe(2);
+    expect(await main(["prototype", "--repo", dir, "../evil"])).toBe(2);
+    expect(out.join("\n")).toMatch(/not a usable story id/);
+
+    out = [];
+    expect(await main(["prototype", "--repo", dir, "pdf"])).toBe(1); // no story yet
+    expect(out.join("\n")).toMatch(/no story at docs\/stories\/pdf\.md/);
+    expect(await main(["approve", "--repo", dir, "pdf"])).toBe(1); // no prototype yet
+    expect(out.join("\n")).toMatch(/no prototype for pdf/);
+  });
+
+  it("walks a prototype from draft to approved to stale without calling an agent", async () => {
+    await main(["init", "--repo", dir]);
+    await mkdir(path.join(dir, "docs", "stories"), { recursive: true });
+    await mkdir(path.join(dir, "docs", "prototypes", "pdf"), { recursive: true });
+    await writeFile(path.join(dir, "docs", "stories", "pdf.md"), "# Export reports as PDF\n\nBody.\n\n## Acceptance criteria\n- A button\n");
+    const index = path.join(dir, "docs", "prototypes", "pdf", "index.html");
+    await writeFile(index, "<html><body>v1</body></html>");
+
+    out = [];
+    expect(await main(["prototype", "--repo", dir, "pdf"])).toBe(0);
+    expect(out.join("\n")).toMatch(/pdf is draft/);
+    expect(out.join("\n")).toMatch(/foreman approve pdf/);
+
+    out = [];
+    expect(await main(["approve", "--repo", dir, "pdf"])).toBe(0);
+    expect(out.join("\n")).toMatch(/Approved docs\/prototypes\/pdf\/index\.html/);
+    expect(out.join("\n")).toMatch(/- id: pdf\n\s+title: "Export reports as PDF"/);
+    expect(out.join("\n")).toMatch(/docs\.enabled: true/);
+    expect(await readFile(path.join(dir, "docs", "prototypes", "pdf", "approval.json"), "utf8")).toMatch(/"sha256"/);
+
+    out = [];
+    expect(await main(["prototype", "--repo", dir, "pdf"])).toBe(0);
+    expect(out.join("\n")).toMatch(/pdf is approved/);
+    expect(out.join("\n")).toMatch(/Commit and push docs\/prototypes\/pdf\//);
+    out = [];
+    expect(await main(["approve", "--repo", dir, "pdf"])).toBe(0);
+    expect(out.join("\n")).toMatch(/Already approved/);
+
+    await writeFile(index, "<html><body>v2 edited by hand</body></html>");
+    out = [];
+    expect(await main(["prototype", "--repo", dir, "pdf"])).toBe(0);
+    expect(out.join("\n")).toMatch(/pdf is stale/);
+  });
+
   it("reports config errors with exit code 2", async () => {
     expect(await main(["status", "--repo", dir])).toBe(2);
     expect(out.join("\n")).toMatch(/foreman init/);

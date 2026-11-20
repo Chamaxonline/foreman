@@ -23,6 +23,7 @@ import {
   type ReviewVerdict,
 } from "./prompts.js";
 import { failureReport, historyTable, successPrBody, type OutcomeStatus, type TaskOutcome } from "./report.js";
+import { decideGate, prototypeLayout, stateFromFiles, type PrototypeState } from "./prototype.js";
 import type { Role, RoleDefinition } from "./roles.js";
 import type { AttemptRecord, StateStore } from "./state.js";
 import { errorSignature, StuckDetector } from "./stuck.js";
@@ -96,6 +97,8 @@ export interface LoopDeps {
   /** Per-task agent event log sink. */
   taskLog?: (taskId: string) => (line: string) => void;
   keepWorktrees?: boolean;
+  /** State of a task's prototype in the user's own checkout (not the worktree). Absent: treated as none. */
+  localPrototypeState?: (taskId: string) => Promise<PrototypeState>;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -250,6 +253,23 @@ export class TaskRunner {
     }
     const wt = await d.git.createWorktree(task.id);
     const ctx: Ctx = { ...base, task, dir: wt.dir, baseSha: wt.baseSha, plan: "", lastChecks: [], lastError: "" };
+
+    // ---- prototype gate: a task with a prototype is built only once it is approved ----
+    // The worktree is cut from origin/<base>, so this reads the prototype as the build will see it.
+    const proto = prototypeLayout(cfg, task.id);
+    const committed = stateFromFiles(await d.git.readWorkingFile(ctx.dir, proto.index), await d.git.readWorkingFile(ctx.dir, proto.approval));
+    const local = d.localPrototypeState ? await d.localPrototypeState(task.id) : "none";
+    const gate = decideGate(task.id, proto, committed, local, cfg.baseBranch);
+    if (!gate.proceed) {
+      d.log.info(`  ⏸ ${gate.reason}`);
+      await d.state.updateTask(task.id, { status: "pending", lastError: gate.reason });
+      return this.outcome(task, "skipped", base.started, base.models, { reason: gate.reason });
+    }
+    if (gate.prototypeDir) {
+      task = { ...task, prototypeDir: gate.prototypeDir };
+      ctx.task = task;
+      d.log.info(`  ✔ building to match the approved prototype in ${gate.prototypeDir}/`);
+    }
 
     // ---- setup: install dependencies etc. so the agent can run checks itself ----
     const setup = await d.checks.setup(ctx.dir, ctx.signal);
@@ -599,7 +619,8 @@ export class TaskRunner {
       // only invites calls the guard has to deny, each a wasted paid turn.
       allowBash: role === "coder" && d.config.agent.allowBash,
       allowedCommands: role === "coder" ? [...d.config.checks.map((c) => c.run), ...d.config.agent.extraAllowedCommands] : [],
-      isProtected: d.isProtected,
+      // The approved prototype is the reference: no agent edits it.
+      isProtected: ctx.task.prototypeDir ? protecting(d.isProtected, ctx.task.prototypeDir) : d.isProtected,
       maxTurns: d.config.limits.maxTurnsPerCall,
       signal: ctx.signal,
       onEvent: ctx.tlog,
@@ -804,6 +825,10 @@ function uniquePaths(v: Array<{ path: string }>): string[] {
 function firstLine(s: string): string {
   const line = s.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("$") && !l.startsWith("(exit")) ?? s.trim();
   return line.slice(0, 200);
+}
+
+function protecting(base: (relPath: string) => boolean, dir: string): (relPath: string) => boolean {
+  return (p) => base(p) || p === dir || p.startsWith(dir + "/");
 }
 
 /** The last non-empty line: for install/build output that is where the actual error is. */

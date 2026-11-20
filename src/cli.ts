@@ -6,17 +6,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { AuthError, resolveAuth, SdkAgentRunner, type AuthMode } from "./claude.js";
-import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
+import { CONFIG_FILE, ConfigError, loadConfig, type ForemanConfig } from "./config.js";
 import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
 import { sleepAbortable, tailLog } from "./logs.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
+import { parseStoryDoc } from "./prompts.js";
+import {
+  approvePrototype,
+  localPrototypeState,
+  PrototypeError,
+  prototypeLayout,
+  writePrototype,
+  type PrototypeState,
+} from "./prototype.js";
 import { loadRoles } from "./roles.js";
 import { createRuntime } from "./runtime.js";
 import { makeProtectedMatcher } from "./safety.js";
 import { StoryError, writeStory } from "./story.js";
 import { acquireLock, LockError, StateStore, STATE_DIR, usageOf } from "./state.js";
-import { loadTasks, sortByPriority, TasksError } from "./tasks.js";
+import { loadTasks, sortByPriority, TASK_ID_RE, TasksError } from "./tasks.js";
 import { configTemplate, detectProject, TASKS_TEMPLATE } from "./templates.js";
 
 const HELP = `foreman: autonomous task → Claude → verified PR orchestrator
@@ -24,6 +33,9 @@ const HELP = `foreman: autonomous task → Claude → verified PR orchestrator
 Usage:
   foreman init [--force]              Write example foreman.config.yaml and tasks.yaml
   foreman story "<idea>" [--id <name>] Turn an idea into a story file to review (writes no code)
+  foreman prototype <id> [--feedback "..."] [--open]
+                                      Build (or revise) a clickable prototype of a story to approve
+  foreman approve <id>                Approve the prototype so the real build can start
   foreman run [--task <id>] [--retry] Process pending tasks once, then exit
   foreman dry-run [--task <id>]       Like run, but never pushes or opens PRs
   foreman watch                       Run continuously: process, idle, poll again
@@ -41,6 +53,7 @@ Options:
   --keep-worktrees      Keep task worktrees in .foreman/worktrees for debugging
   --watch               With dashboard: keep rewriting the file until Ctrl+C
   --interval <seconds>  With dashboard --watch: refresh interval (default 5)
+  --feedback <text>     With prototype: what to change in an existing prototype
   --force-unlock        Take over a lock held by another foreman process
   --auth <mode>         Claude credential: auto | subscription | api-key (overrides agent.auth)
   -v, --verbose         Print agent activity
@@ -90,6 +103,7 @@ export async function main(argv: string[]): Promise<number> {
         follow: { type: "boolean", short: "f" },
         lines: { type: "string", short: "n" },
         id: { type: "string" },
+        feedback: { type: "string" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -128,6 +142,27 @@ export async function main(argv: string[]): Promise<number> {
           ...(o.auth ? { auth: o.auth } : {}),
           forceUnlock: Boolean(o["force-unlock"]),
         });
+      }
+      case "prototype": {
+        const id = positionals[1];
+        if (!id) {
+          console.error("Give the story id, e.g. foreman prototype export-reports-as-pdf");
+          return 2;
+        }
+        return await cmdPrototype(repoDir, id, {
+          ...(o.feedback ? { feedback: o.feedback } : {}),
+          open: Boolean(o.open),
+          ...(o.auth ? { auth: o.auth } : {}),
+          forceUnlock: Boolean(o["force-unlock"]),
+        });
+      }
+      case "approve": {
+        const id = positionals[1];
+        if (!id) {
+          console.error("Give the story id, e.g. foreman approve export-reports-as-pdf");
+          return 2;
+        }
+        return await cmdApprove(repoDir, id);
       }
       case "logs": {
         const lines = o.lines ? Number(o.lines) : 40;
@@ -347,25 +382,69 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   return 0;
 }
 
-async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: string; forceUnlock: boolean }): Promise<number> {
+interface Stage {
+  config: ForemanConfig;
+  state: StateStore;
+  roles: Awaited<ReturnType<typeof loadRoles>>;
+  agents: SdkAgentRunner;
+  authDescription: string;
+  maxBudgetUsd: number;
+  signal: AbortSignal;
+  isProtected: (relPath: string) => boolean;
+  /** Releases the lock and the Ctrl+C handlers. */
+  done(): Promise<void>;
+}
+
+/**
+ * Shared setup for the commands that make one agent call (story, prototype):
+ * config, the same lock as run/watch (their spend goes to the shared state
+ * file), a daily-cap check and Claude auth. Returns an exit code when it can't start.
+ */
+async function startStage(repoDir: string, o: { auth?: string; forceUnlock: boolean }): Promise<Stage | number> {
   const config = await loadConfig(repoDir);
   const stateDir = path.join(repoDir, STATE_DIR);
-  // Same lock as run/watch: story spend is written to the shared state file.
   const release = await acquireLock(stateDir, { force: o.forceUnlock });
   const stop = new AbortController();
   const onSignal = () => stop.abort();
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  const done = async () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    await release();
+  };
   try {
     const state = await StateStore.open(stateDir, { dayBoundary: config.dayBoundary });
     const remaining = config.limits.maxSpendPerDayUsd - state.spentToday();
     if (remaining <= 0) {
       console.error(`Daily spend cap reached ($${state.spentToday().toFixed(2)} of $${config.limits.maxSpendPerDayUsd.toFixed(2)}). Try again after it resets.`);
+      await done();
       return 1;
     }
     const auth = resolveAuth(o.auth ? parseAuthMode(o.auth) : config.agent.auth);
-    const roles = await loadRoles();
-    console.log(`Writing a story with ${config.models.analyst} (${auth.description})...`);
+    return {
+      config,
+      state,
+      roles: await loadRoles(),
+      agents: new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox, auth }),
+      authDescription: auth.description,
+      maxBudgetUsd: Math.min(remaining, config.limits.maxSpendPerTaskUsd ?? Infinity),
+      signal: stop.signal,
+      isProtected: makeProtectedMatcher(config),
+      done,
+    };
+  } catch (e) {
+    await done();
+    throw e;
+  }
+}
+
+async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: string; forceUnlock: boolean }): Promise<number> {
+  const stage = await startStage(repoDir, o);
+  if (typeof stage === "number") return stage;
+  const { config, state } = stage;
+  try {
+    console.log(`Writing a story with ${config.models.analyst} (${stage.authDescription})...`);
     let result;
     try {
       result = await writeStory({
@@ -373,11 +452,11 @@ async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: 
         idea,
         ...(o.id ? { id: o.id } : {}),
         config,
-        agents: new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox, auth }),
-        systemPrompt: roles.analyst.prompt,
-        isProtected: makeProtectedMatcher(config),
-        maxBudgetUsd: Math.min(remaining, config.limits.maxSpendPerTaskUsd ?? Infinity),
-        signal: stop.signal,
+        agents: stage.agents,
+        systemPrompt: stage.roles.analyst.prompt,
+        isProtected: stage.isProtected,
+        maxBudgetUsd: stage.maxBudgetUsd,
+        signal: stage.signal,
       });
     } catch (e) {
       if (e instanceof StoryError) {
@@ -392,15 +471,110 @@ async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: 
     console.log(`  ${result.title ?? "(no title found)"}`);
     console.log(`  ${result.acceptance.length} acceptance criteria · $${result.costUsd.toFixed(2)}`);
     if (!result.acceptance.length) console.log("  Warning: no acceptance criteria were found. Open the file and add them.");
-    console.log(`\nNext: read and edit it, then add a task that uses it to ${config.tasksFile}:`);
+    console.log(`\nNext: read and edit it. To see it as a clickable prototype before anything is built:`);
+    console.log(`  foreman prototype ${result.id}`);
+    console.log(`To build it directly instead: commit and push the story to origin/${config.baseBranch} (the build only sees what is there), then add to ${config.tasksFile}:`);
     console.log(`  - id: ${result.id}`);
     console.log(`    prompt: ${JSON.stringify(idea)}`);
     if (!config.docs.enabled) console.log("Also set `docs.enabled: true` in foreman.config.yaml so tasks use story docs.");
     return 0;
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    await release();
+    await stage.done();
+  }
+}
+
+function prototypeNext(id: string, state: PrototypeState, config: ForemanConfig): string {
+  const dir = prototypeLayout(config, id).dir;
+  switch (state) {
+    case "approved":
+      return `Approved. Commit and push ${dir}/ (including approval.json) to origin/${config.baseBranch} so the build can see it, then run foreman.`;
+    case "stale":
+      return `It changed after it was approved. Run \`foreman approve ${id}\` again.`;
+    default:
+      return `Open it in a browser. Happy with it? Run \`foreman approve ${id}\`. Want changes? Run \`foreman prototype ${id} --feedback "what to change"\`.`;
+  }
+}
+
+async function cmdPrototype(
+  repoDir: string,
+  id: string,
+  o: { feedback?: string; open: boolean; auth?: string; forceUnlock: boolean },
+): Promise<number> {
+  if (!TASK_ID_RE.test(id) || id.includes("..")) {
+    console.error(`"${id}" is not a usable story id: use 1-64 letters, digits, '.', '_' or '-'.`);
+    return 2;
+  }
+  const config = await loadConfig(repoDir);
+  const layout = prototypeLayout(config, id);
+  const file = path.join(repoDir, layout.index);
+  const existing = await localPrototypeState(repoDir, config, id);
+  if (existing !== "none" && !o.feedback) {
+    // Nothing to build: say where it stands (and show it) without an agent call.
+    console.log(`The prototype for ${id} is ${existing}: ${file}`);
+    console.log(prototypeNext(id, existing, config));
+    if (o.open) openInBrowser(file);
+    return 0;
+  }
+
+  const stage = await startStage(repoDir, o);
+  if (typeof stage === "number") return stage;
+  try {
+    console.log(`${o.feedback ? "Revising" : "Building"} the prototype with ${config.models.designer} (${stage.authDescription}). This can take a few minutes...`);
+    let result;
+    try {
+      result = await writePrototype({
+        repoDir,
+        id,
+        ...(o.feedback ? { feedback: o.feedback } : {}),
+        config,
+        agents: stage.agents,
+        systemPrompt: stage.roles.designer.prompt,
+        isProtected: stage.isProtected,
+        maxBudgetUsd: stage.maxBudgetUsd,
+        signal: stage.signal,
+      });
+    } catch (e) {
+      if (e instanceof PrototypeError) {
+        if (e.costUsd > 0) await stage.state.addSpend(e.costUsd);
+        console.error(e.message);
+        return 1;
+      }
+      throw e;
+    }
+    await stage.state.addSpend(result.costUsd);
+    console.log(`\n${result.revised ? "Revised" : "Wrote"} ${layout.index} · $${result.costUsd.toFixed(2)}`);
+    console.log(`  ${file}`);
+    if (result.externalRefs.length) {
+      console.log("  Warning: it referenced outside resources. The browser blocks them, so it may not look as intended:");
+      for (const ref of result.externalRefs) console.log(`    ${ref}`);
+    }
+    console.log(prototypeNext(id, "draft", config));
+    if (o.open) openInBrowser(file);
+    return 0;
+  } finally {
+    await stage.done();
+  }
+}
+
+async function cmdApprove(repoDir: string, id: string): Promise<number> {
+  const config = await loadConfig(repoDir);
+  try {
+    const r = await approvePrototype(repoDir, config, id);
+    const story = await readFile(path.join(repoDir, r.layout.story), "utf8").catch(() => "");
+    const title = parseStoryDoc(story).title ?? id;
+    console.log(r.alreadyApproved ? `Already approved: ${r.layout.index}` : `Approved ${r.layout.index}`);
+    console.log(`\nNext: commit and push ${r.layout.dir}/ and ${r.layout.story} to origin/${config.baseBranch} (the build only sees what is there).`);
+    console.log(`Then add this task to ${config.tasksFile} and run foreman:`);
+    console.log(`  - id: ${id}`);
+    console.log(`    title: ${JSON.stringify(title)}`);
+    if (!config.docs.enabled) console.log("Also set `docs.enabled: true` in foreman.config.yaml so the task is built from the story, not just its title.");
+    return 0;
+  } catch (e) {
+    if (e instanceof PrototypeError) {
+      console.error(e.message);
+      return 1;
+    }
+    throw e;
   }
 }
 

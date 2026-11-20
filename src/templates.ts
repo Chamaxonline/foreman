@@ -82,6 +82,7 @@ models:
   coder: sonnet      # implements the plan
   reviewer: opus     # optional review after checks pass (read-only)
   escalation: opus   # coder model after repeated failures
+  designer: opus     # builds clickable prototypes (\`foreman prototype\`)
 
 limits:
   maxAttemptsPerTask: 5
@@ -131,6 +132,14 @@ agent:
 docs:
   enabled: false
   dir: docs/stories
+
+# \`foreman prototype <id>\` builds a clickable prototype of a story for you to
+# approve before the real build. It looks at your existing UI to match it; a
+# design brief (markdown with your colors, typography and spacing) makes it
+# match better. Commit the prototype folder so the build can see it.
+# prototype:
+#   dir: docs/prototypes
+#   designBrief: docs/design.md
 
 # Extra paths agents may never modify (CI, test/lint config, foreman files are always protected)
 protectedPaths: []

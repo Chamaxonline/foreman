@@ -67,6 +67,7 @@ Azure DevOps) and run `foreman run`. Watch it from a second terminal with
 - [Running on an always-on server](#running-on-an-always-on-server)
 - [Configuration reference](#configuration-reference)
 - [Tasks](#tasks)
+- [From idea to product](#from-idea-to-product)
 - [Using foreman in a team](#using-foreman-in-a-team)
 - [Safety model](#safety-model)
 - [Claude Code plugin](#claude-code-plugin)
@@ -212,6 +213,8 @@ export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: 
 |---|---|
 | `foreman init [--force]` | Writes an annotated `foreman.config.yaml` and an example `tasks.yaml`, and adds `.foreman/` to `.gitignore`. |
 | `foreman story "<idea>" [--id <name>]` | Turns a one-line idea into a story file under `docs.dir` and stops. No code is written. See [Story docs](#story-docs-giving-a-task-as-just-a-prompt). |
+| `foreman prototype <id> [--feedback "..."] [--open]` | Builds a clickable prototype of a story to approve, or revises it with feedback. See [From idea to product](#from-idea-to-product). |
+| `foreman approve <id>` | Approves the prototype, so the real build can start. |
 | `foreman dry-run [--task <id>]` | The full loop, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman run [--task <id>] [--retry]` | Processes runnable tasks once, writes a report, then exits. `--retry` reruns a done or needs-human task from scratch. |
 | `foreman watch` | Continuous mode: processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
@@ -430,6 +433,7 @@ models:                         # aliases (opus, sonnet, haiku) or full model ID
   reviewer: opus
   escalation: opus              # coder model after repeated failures
   analyst: opus                 # writes/updates story docs (see docs.enabled below)
+  designer: opus                # builds prototypes (see From idea to product)
 
 limits:
   maxAttemptsPerTask: 5
@@ -455,6 +459,7 @@ agent:
   sandbox: true                 # Claude Code's OS-level Bash sandbox, where supported
   envPassthrough: []            # extra env vars for agents (e.g. Bedrock/Vertex config)
 docs:     { enabled: false, dir: docs/stories }   # see Story docs, under Tasks
+prototype: { dir: docs/prototypes }        # optional: designBrief: docs/design.md (your colors, type, spacing)
 protectedPaths: []              # extra globs agents may never modify
 dayBoundary: utc                # utc | local; when the daily cap resets
 ```
@@ -568,6 +573,46 @@ open issue (or work item) carrying the label/tag becomes a task:
 
 Rerun any finished task with `--task <id> --retry`.
 
+## From idea to product
+
+For a feature you can see, look at it before anything real is built:
+
+```bash
+foreman story "Let users export reports as PDF"        # 1. idea -> a story file to review
+foreman prototype let-users-export-reports-as-pdf --open   # 2. a clickable prototype
+foreman prototype let-users-export-reports-as-pdf --feedback "make the table denser"   # revise until it's right
+foreman approve let-users-export-reports-as-pdf        # 3. you approve it
+# 4. commit and push the story and prototype, add the task it prints, then:
+foreman run                                            # the real build, matching the prototype
+```
+
+Each step writes a file you can read, edit and commit, and foreman never moves
+to the next step on its own.
+
+- **The prototype** is one self-contained `index.html` under `prototype.dir`
+  (default `docs/prototypes/<id>/`) with realistic sample data. A *designer*
+  agent (`models.designer`) writes it in your checkout, with write access only
+  to that folder and no Bash. It studies your existing UI so the result looks
+  like your product, or follows `prototype.designBrief`, a markdown file with
+  your colors, typography, spacing and component rules. Without either, expect
+  a competent but generic look.
+- **It can't call out.** foreman adds a Content-Security-Policy to the page, so
+  the browser blocks every network request from it, however it was written. If
+  the agent referenced outside resources, the command tells you.
+- **Approval** records a hash of the exact `index.html` in `approval.json`.
+  Editing the file afterwards makes the approval stale, and `--feedback` withdraws
+  it. Agents can't write `approval.json`; it is a protected path.
+- **The build** is the normal `foreman run`. If a task's id has a prototype, it
+  is built only when that prototype is approved and committed on the base
+  branch (the build runs from `origin/<baseBranch>`). A draft, a stale approval,
+  or a prototype that exists only in your checkout makes the task wait, with the
+  reason in the run output and `foreman status`, and nothing is spent. Once it
+  runs, the planner, coder and reviewer are told to match the prototype, and
+  the prototype folder is read-only for them.
+- Tasks without a prototype are unaffected, so this is optional per story. Set
+  `docs.enabled: true` so the task is built from the story and not just its
+  title.
+
 ## Using foreman in a team
 
 Only one person has to run foreman. Nobody else has to change how they work.
@@ -599,7 +644,8 @@ prompts.
 | No edits to protected paths | The same hook denies the write. The diff gate rejects the change before commit and reverts it. |
 | No deleting or skipping tests | The diff gate rejects deleted test files, tests moved out of the suite, a net loss of test cases, added `.skip` / `.only` / `xit` / `@pytest.mark.skip` / `t.Skip` / `#[ignore]` / `@Disabled` markers, and runner flags like `--passWithNoTests`. |
 | Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Only the coder gets Bash, and it only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. The planner, reviewer and analyst have no Bash at all, and the planner and reviewer are read-only. |
-| A role can be scoped to one folder | The analyst (story docs) has no Bash and can only write inside `docs.dir`; writes anywhere else are denied the same way protected paths are, regardless of whether that path is otherwise protected. |
+| A role can be scoped to one folder | The analyst (story docs) can only write inside `docs.dir`, and the designer (prototypes) only inside its own `prototype.dir/<id>/` folder. Neither has Bash, and writes anywhere else are denied the same way protected paths are. |
+| Prototypes can't call out, or approve themselves | foreman adds a Content-Security-Policy to every prototype, so the browser blocks all network requests from it. `approval.json` is a protected path, so only `foreman approve` can write it, and it covers one exact version of `index.html`. |
 | The repo can't loosen the rules | `settingSources: []`, so the target repo's `.claude/` settings and hooks are ignored. |
 | No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, Azure DevOps tokens (`AZURE_DEVOPS_*`, `SYSTEM_ACCESSTOKEN`), npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Claude credential. |
 
@@ -652,10 +698,12 @@ Add your own with `protectedPaths`.
 interactively:
 
 - **Subagents** `planner` (opus, read-only), `coder` (sonnet), `reviewer`
-  (opus, read-only) and `analyst` (opus; writes/updates story docs — see
+  (opus, read-only), `analyst` (opus; writes/updates story docs — see
   [Story docs](#story-docs-giving-a-task-as-just-a-prompt), write access
-  limited to the docs folder). The runner uses these same files as its role
-  prompts, so editing them changes both.
+  limited to the docs folder) and `designer` (opus; builds prototypes — see
+  [From idea to product](#from-idea-to-product), write access limited to the
+  prototype folder). The runner uses these same files as its role prompts, so
+  editing them changes both.
 - **`/foreman <task-id | description>`**: plan, implement, run the checks and
   review, without committing or pushing.
 - **Hooks:**
@@ -711,6 +759,7 @@ Layout:
 - `src/git.ts`: the git layer
 - `src/github.ts`, `src/azure.ts`: the GitHub and Azure DevOps host implementations
 - `src/state.ts`: persistence, including the per-call usage ledger
+- `src/story.ts`, `src/prototype.ts`: the idea-to-story and story-to-prototype stages, and the approval gate
 - `src/report.ts`, `src/dashboard.ts`, `src/logs.ts`: run reports, the HTML dashboard and `foreman logs`
 
 Tests mock Claude and the repository host. git runs for real against temporary

@@ -113,6 +113,8 @@ export function protectedGlobs(cfg: ForemanConfig): string[] {
   return [
     ...BUILTIN_PROTECTED,
     `/${cfg.tasksFile.replace(/^\.\//, "")}`,
+    // Approving a prototype is the user's decision: no agent may write the marker.
+    `/${cfg.prototype.dir.replace(/^\.?\/+|\/+$/g, "")}/*/approval.json`,
     ...checkDefinitionFiles(cfg.checks.map((c) => c.run)),
     ...cfg.protectedPaths,
   ];

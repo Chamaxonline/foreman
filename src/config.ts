@@ -40,6 +40,8 @@ const modelsSchema = z
     escalation: z.string().default("opus"),
     /** Writes/updates story docs from a raw prompt (see `docs.enabled`). */
     analyst: z.string().default("opus"),
+    /** Builds the clickable prototype for a story (`foreman prototype`). */
+    designer: z.string().default("opus"),
   })
   .prefault({});
 
@@ -86,6 +88,19 @@ const issuesSchema = z
   .object({
     enabled: z.boolean().default(false),
     label: z.string().default("foreman"),
+  })
+  .prefault({});
+
+const prototypeSchema = z
+  .object({
+    /** Where prototypes live: `<dir>/<story-id>/index.html`. Commit it so the build can see it. */
+    dir: z.string().min(1).default("docs/prototypes"),
+    /**
+     * Optional markdown file (repo-relative) with your colors, typography,
+     * spacing and component rules. The designer reads it first; without one
+     * it studies the project's existing UI code instead.
+     */
+    designBrief: z.string().min(1).optional(),
   })
   .prefault({});
 
@@ -171,6 +186,7 @@ export const configSchema = z.object({
   watch: watchSchema,
   agent: agentSchema,
   docs: docsSchema,
+  prototype: prototypeSchema,
   /** Extra globs agents may never modify, on top of the built-in protected set. */
   protectedPaths: z.array(z.string()).default([]),
   /** "utc" or "local": which midnight resets the daily spend cap. */

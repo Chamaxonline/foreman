@@ -13,6 +13,15 @@ function taskBlock(task: Task): string {
     for (const f of task.files) lines.push(`- ${f}`);
     lines.push("");
   }
+  if (task.prototypeDir) {
+    lines.push(
+      "## Approved prototype",
+      `The user approved the clickable prototype in \`${task.prototypeDir}/index.html\`. Read it and build the real feature to match its layout, copy, states and flow.`,
+      "Rebuild it properly in this project's own stack, components and styling, with real data and the project's conventions.",
+      "Do not import from, link to or edit the prototype folder: it is a reference only.",
+      "",
+    );
+  }
   return lines.join("\n");
 }
 
@@ -209,6 +218,44 @@ export function storyUpdatePrompt(existingDoc: string, missing: string[], prompt
     "",
     `Update \`${docPath}\` to add the missing acceptance criteria above. Keep everything already in the file.`,
   ].join("\n");
+}
+
+export function prototypeWritePrompt(story: { path: string; content: string }, folder: string, designBrief?: string): string {
+  return [
+    `# Build a prototype for ${story.path}`,
+    "",
+    "## The story",
+    "```markdown",
+    story.content.trim(),
+    "```",
+    "",
+    designBrief
+      ? `Design brief: read \`${designBrief}\` first and follow it exactly.`
+      : "No design brief was given: study the project's existing UI and match it.",
+    "",
+    `Prototype folder: \`${folder}\``,
+    `This is a new prototype. Write \`${folder}/index.html\` now.`,
+  ].join("\n");
+}
+
+export function prototypeRevisePrompt(story: { path: string; content: string }, folder: string, feedback: string, designBrief?: string): string {
+  return [
+    `# Revise the prototype for ${story.path}`,
+    "",
+    "## The story",
+    "```markdown",
+    story.content.trim(),
+    "```",
+    "",
+    "## Feedback from the person reviewing it",
+    feedback.trim(),
+    "",
+    designBrief ? `Design brief: \`${designBrief}\` (still applies).` : "",
+    `Prototype folder: \`${folder}\``,
+    `Read \`${folder}/index.html\` first, then apply the feedback to it. Keep everything the feedback does not mention.`,
+  ]
+    .filter((l, i, a) => l !== "" || a[i - 1] !== "")
+    .join("\n");
 }
 
 export const STORY_GAP_SCHEMA = {

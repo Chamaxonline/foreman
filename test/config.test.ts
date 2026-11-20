@@ -75,6 +75,17 @@ pr: { labels: [bot, foreman] }
     ).toEqual([{ name: "install", run: "npm ci", timeoutMinutes: 20 }]);
   });
 
+  it("prototype defaults to docs/prototypes with no design brief, and designer defaults to opus", () => {
+    const cfg = parseConfig(`checks: { test: npm test }`);
+    expect(cfg.prototype).toEqual({ dir: "docs/prototypes" });
+    expect(cfg.models.designer).toBe("opus");
+    const custom = parseConfig(
+      `checks: { test: npm test }\nprototype: { dir: ui/protos, designBrief: docs/design.md }\nmodels: { designer: sonnet }`,
+    );
+    expect(custom.prototype).toEqual({ dir: "ui/protos", designBrief: "docs/design.md" });
+    expect(custom.models.designer).toBe("sonnet");
+  });
+
   it("accepts docs and analyst model overrides", () => {
     const cfg = parseConfig(`
 checks: { test: npm test }

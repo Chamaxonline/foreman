@@ -11,6 +11,7 @@ import { OctokitGitHub } from "./github.js";
 import type { HostKind, RepoHost } from "./host.js";
 import { TaskRunner, type Logger } from "./loop.js";
 import { Orchestrator } from "./orchestrator.js";
+import { localPrototypeState } from "./prototype.js";
 import { loadRoles } from "./roles.js";
 import { makeProtectedMatcher, SafetyGate } from "./safety.js";
 import { StateStore, STATE_DIR } from "./state.js";
@@ -218,6 +219,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
         runId,
         dryRun: opts.dryRun,
         log,
+        localPrototypeState: (taskId) => localPrototypeState(repoDir, config, taskId),
         keepWorktrees: opts.keepWorktrees ?? false,
         taskLog: (taskId) => {
           const file = path.join(stateDir, "logs", runId, `${taskId}.log`);

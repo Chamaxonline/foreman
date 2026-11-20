@@ -92,6 +92,8 @@ export interface Task {
   source: TaskSource;
   /** GitHub issue number when source === "issue". */
   issueNumber?: number;
+  /** Repo-relative folder of the user-approved prototype to match. Set by the runner, never read from tasks.yaml. */
+  prototypeDir?: string;
 }
 
 const tasksFileSchema = z.union([
