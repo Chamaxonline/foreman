@@ -1,121 +1,161 @@
-import { describe, expect, it } from "vitest";
-import {
-  parseStoryDoc,
-  parseStoryGap,
-  STORY_GAP_SCHEMA,
-  storyGapCheckPrompt,
-  storyUpdatePrompt,
-  storyWritePrompt,
-} from "../src/prompts.js";
-import { extractAcceptanceSection, titleFromPrompt } from "../src/tasks.js";
-import { makeTask } from "./helpers/fakes.js";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AgentCall, AgentResult, AgentRunner } from "../src/claude.js";
+import { storyIdFromIdea, StoryError, writeStory } from "../src/story.js";
+import { TASK_ID_RE } from "../src/tasks.js";
+import { makeConfig } from "./helpers/fakes.js";
 
-describe("titleFromPrompt", () => {
-  it("takes the first line, truncated", () => {
-    expect(titleFromPrompt("Add dark mode\nmore detail below")).toBe("Add dark mode");
-    expect(titleFromPrompt("  spaced  \n")).toBe("spaced");
-    const long = "x".repeat(100);
-    const t = titleFromPrompt(long);
-    expect(t.length).toBe(80);
-    expect(t.endsWith("…")).toBe(true);
+let dir: string;
+beforeEach(async () => {
+  dir = await mkdtemp(path.join(os.tmpdir(), "foreman-story-"));
+});
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+const STORY = `# Export reports as PDF
+
+Users need to download a report as a PDF from the reports page.
+
+## Out of scope
+- Scheduled exports
+
+## Acceptance criteria
+- A "Download PDF" button appears on the report page
+- The PDF contains the same rows as the table
+- Covered by a test
+`;
+
+const result = (over: Partial<AgentResult> = {}): AgentResult => ({
+  ok: true, text: "", costUsd: 0.21, turns: 5, subtype: "success", deniedToolCalls: 0, ...over,
+});
+
+/** An analyst that writes `content` to the story path it was given, on the real disk. */
+function fakeAnalyst(content: string | undefined, over: Partial<AgentResult> = {}) {
+  const calls: AgentCall[] = [];
+  const runner: AgentRunner = {
+    async run(call) {
+      calls.push(call);
+      if (content !== undefined) {
+        const file = /Story file: `([^`]+)`/.exec(call.prompt)![1]!;
+        await mkdir(path.dirname(path.join(call.cwd, file)), { recursive: true });
+        await writeFile(path.join(call.cwd, file), content);
+      }
+      return result(over);
+    },
+  };
+  return { runner, calls };
+}
+
+const base = (agents: AgentRunner, over: Record<string, unknown> = {}) => ({
+  repoDir: dir,
+  idea: "Let users export reports as PDF",
+  config: makeConfig(""),
+  agents,
+  systemPrompt: "you are the analyst",
+  isProtected: () => false,
+  maxBudgetUsd: 5,
+  ...over,
+});
+
+describe("storyIdFromIdea", () => {
+  it("makes a short file-safe id from the first words", () => {
+    expect(storyIdFromIdea("Let users export reports as PDF")).toBe("let-users-export-reports-as-pdf");
+    expect(storyIdFromIdea("  Add a /health endpoint!!  ")).toBe("add-a-health-endpoint");
+  });
+
+  it("caps the length, never ends in a dash, and always yields a valid task id", () => {
+    const id = storyIdFromIdea("internationalization-internationalization-internationalization and more words after");
+    expect(id.length).toBeLessThanOrEqual(48);
+    expect(id.endsWith("-")).toBe(false);
+    expect(TASK_ID_RE.test(id)).toBe(true);
+  });
+
+  it("falls back to a generated id when the idea has no usable letters", () => {
+    const id = storyIdFromIdea("日本語 !!!");
+    expect(id).toMatch(/^story-[a-z0-9]+$/);
+    expect(TASK_ID_RE.test(id)).toBe(true);
   });
 });
 
-describe("extractAcceptanceSection", () => {
-  it("pulls bullets and numbered items from an Acceptance heading at any level", () => {
-    expect(extractAcceptanceSection("## Acceptance criteria\n- a\n- b\n1. c\n")).toEqual(["a", "b", "c"]);
-    expect(extractAcceptanceSection("### Acceptance\n- [ ] x\n- [x] y\n")).toEqual(["x", "y"]);
-  });
+describe("writeStory", () => {
+  it("runs one analyst call scoped to the docs folder and returns what it wrote", async () => {
+    const { runner, calls } = fakeAnalyst(STORY);
+    const r = await writeStory(base(runner));
 
-  it("returns [] when there is no such section", () => {
-    expect(extractAcceptanceSection("just some text")).toEqual([]);
-  });
-
-  it("stops at the next heading", () => {
-    expect(extractAcceptanceSection("## Acceptance\n- a\n## Notes\n- not this\n")).toEqual(["a"]);
-  });
-});
-
-describe("parseStoryDoc", () => {
-  it("extracts title, body and acceptance from the analyst's expected shape", () => {
-    const doc = ["# My Story", "", "Some context.", "More context.", "", "## Acceptance criteria", "- does X", "- does Y", ""].join("\n");
-    expect(parseStoryDoc(doc)).toEqual({
-      title: "My Story",
-      description: "Some context.\nMore context.",
-      acceptance: ["does X", "does Y"],
+    expect(r).toEqual({
+      id: "let-users-export-reports-as-pdf",
+      file: "docs/stories/let-users-export-reports-as-pdf.md",
+      title: "Export reports as PDF",
+      acceptance: ['A "Download PDF" button appears on the report page', "The PDF contains the same rows as the table", "Covered by a test"],
+      costUsd: 0.21,
     });
-  });
+    expect(await readFile(path.join(dir, r.file), "utf8")).toBe(STORY);
 
-  it("tolerates a missing title or missing acceptance section", () => {
-    expect(parseStoryDoc("Just a description, no heading.")).toEqual({
-      description: "Just a description, no heading.",
-      acceptance: [],
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      role: "analyst",
+      model: "opus",
+      cwd: dir,
+      readOnly: false,
+      allowBash: false,
+      allowedCommands: [],
+      writeScope: ["docs/stories"],
+      maxBudgetUsd: 5,
     });
-    const titleOnly = parseStoryDoc("# Title only\n\nbody\n");
-    expect(titleOnly.title).toBe("Title only");
-    expect(titleOnly.acceptance).toEqual([]);
+    expect(calls[0]!.prompt).toContain("Let users export reports as PDF");
+    expect(calls[0]!.prompt).toContain("docs/stories/let-users-export-reports-as-pdf.md");
+    expect(calls[0]!.systemPrompt).toBe("you are the analyst");
   });
 
-  it("handles CRLF line endings", () => {
-    const doc = "# T\r\n\r\nbody\r\n\r\n## Acceptance criteria\r\n- a\r\n";
-    expect(parseStoryDoc(doc)).toEqual({ title: "T", description: "body", acceptance: ["a"] });
+  it("honours --id and a custom docs.dir", async () => {
+    const { runner, calls } = fakeAnalyst(STORY);
+    const r = await writeStory(base(runner, { id: "pdf-export", config: makeConfig("docs: { dir: notes/stories/ }") }));
+    expect(r.file).toBe("notes/stories/pdf-export.md");
+    expect(calls[0]!.writeScope).toEqual(["notes/stories"]);
   });
 
-  it("never throws on empty or malformed input", () => {
-    expect(parseStoryDoc("")).toEqual({ description: "", acceptance: [] });
-    expect(() => parseStoryDoc("####### too many hashes\nAcceptance")).not.toThrow();
-  });
-});
-
-describe("story prompts", () => {
-  const task = makeTask({ files: ["src/x.ts"] });
-  const docPath = "docs/stories/t1.md";
-
-  it("storyWritePrompt names the file and includes the ask and file hints", () => {
-    const p = storyWritePrompt(task, "Make X faster", docPath);
-    expect(p).toContain("Make X faster");
-    expect(p).toContain(docPath);
-    expect(p).toContain("src/x.ts");
-    expect(p).toMatch(/does not exist yet/);
+  it("refuses to overwrite an existing story, without calling the agent", async () => {
+    await mkdir(path.join(dir, "docs/stories"), { recursive: true });
+    await writeFile(path.join(dir, "docs/stories/pdf-export.md"), "# mine\n");
+    const { runner, calls } = fakeAnalyst(STORY);
+    await expect(writeStory(base(runner, { id: "pdf-export" }))).rejects.toThrow(/already exists/);
+    expect(calls).toHaveLength(0);
+    expect(await readFile(path.join(dir, "docs/stories/pdf-export.md"), "utf8")).toBe("# mine\n");
   });
 
-  it("storyGapCheckPrompt includes the existing doc and the new ask, and asks for a verdict without editing", () => {
-    const p = storyGapCheckPrompt("# Old\n\n## Acceptance criteria\n- a\n", "also needs b", docPath);
-    expect(p).toContain("- a");
-    expect(p).toContain("also needs b");
-    expect(p).toMatch(/Do not edit the file/);
+  it("rejects an unusable story name, an empty idea and a docs.dir outside the repo", async () => {
+    const { runner, calls } = fakeAnalyst(STORY);
+    await expect(writeStory(base(runner, { id: "../evil" }))).rejects.toThrow(/not a usable story name/);
+    await expect(writeStory(base(runner, { id: "a/b" }))).rejects.toThrow(/not a usable story name/);
+    await expect(writeStory(base(runner, { idea: "   " }))).rejects.toThrow(/Give the idea/);
+    await expect(writeStory(base(runner, { config: makeConfig("docs: { dir: ../outside }") }))).rejects.toThrow(/inside the repository/);
+    expect(calls).toHaveLength(0);
   });
 
-  it("storyUpdatePrompt lists what's missing and tells the analyst to keep existing content", () => {
-    const p = storyUpdatePrompt("# Old\n\n## Acceptance criteria\n- a\n", ["needs b", "needs c"], "ask", docPath);
-    expect(p).toContain("- needs b");
-    expect(p).toContain("- needs c");
-    expect(p).toMatch(/Keep everything already in the file/);
-  });
-});
-
-describe("STORY_GAP_SCHEMA / parseStoryGap", () => {
-  it("has the expected shape", () => {
-    expect(STORY_GAP_SCHEMA.required).toEqual(["covered", "missing"]);
-    expect(STORY_GAP_SCHEMA.properties.covered.type).toBe("boolean");
+  it("reports an analyst that wrote nothing, and still reports what that attempt cost", async () => {
+    const { runner } = fakeAnalyst(undefined, { subtype: "error_max_turns", costUsd: 0.4 });
+    const err = await writeStory(base(runner)).catch((e) => e);
+    expect(err).toBeInstanceOf(StoryError);
+    expect(err.message).toMatch(/did not write docs\/stories\//);
+    expect(err.message).toMatch(/error_max_turns/);
+    expect(err.costUsd).toBe(0.4);
   });
 
-  it("accepts structured output or a JSON object embedded in text", () => {
-    expect(parseStoryGap({ covered: true, missing: [] }, "")).toEqual({ covered: true, missing: [] });
-    expect(parseStoryGap({ covered: false, missing: ["x"], summary: "s" }, "")).toEqual({
-      covered: false,
-      missing: ["x"],
-      summary: "s",
-    });
-    expect(parseStoryGap(undefined, 'noise {"covered":true,"missing":["y"]} noise')).toEqual({
-      covered: true,
-      missing: ["y"],
-    });
+  it("turns a usage limit and an API failure into clear errors that carry their cost", async () => {
+    const limited = await writeStory(base(fakeAnalyst(undefined, { ok: false, subtype: "rate_limited", costUsd: 0 }).runner)).catch((e) => e);
+    expect(limited.message).toMatch(/usage limit/);
+    const failed = await writeStory(base(fakeAnalyst(undefined, { ok: false, subtype: "exception", error: "boom", costUsd: 0.02 }).runner)).catch((e) => e);
+    expect(failed.message).toMatch(/failed: boom/);
+    expect(failed.costUsd).toBe(0.02);
   });
 
-  it("returns undefined for unusable input", () => {
-    expect(parseStoryGap({ missing: [] }, "")).toBeUndefined();
-    expect(parseStoryGap(undefined, "no json here")).toBeUndefined();
-    expect(parseStoryGap(null, "")).toBeUndefined();
+  it("still returns a story that has no acceptance criteria, so the caller can warn", async () => {
+    const { runner } = fakeAnalyst("# Just a title\n\nSome context.\n");
+    const r = await writeStory(base(runner));
+    expect(r.title).toBe("Just a title");
+    expect(r.acceptance).toEqual([]);
   });
 });

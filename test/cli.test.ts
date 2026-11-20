@@ -185,6 +185,20 @@ describe("cli", () => {
     expect(out.join("\n")).not.toMatch(/dockerignore/);
   });
 
+  it("story needs an idea, and will not overwrite an existing story", async () => {
+    await main(["init", "--repo", dir]);
+    out = [];
+    expect(await main(["story", "--repo", dir])).toBe(2);
+    expect(out.join("\n")).toMatch(/Give the idea as text/);
+
+    await mkdir(path.join(dir, "docs", "stories"), { recursive: true });
+    await writeFile(path.join(dir, "docs", "stories", "pdf-export.md"), "# mine\n");
+    out = [];
+    expect(await main(["story", "--repo", dir, "--id", "pdf-export", "export", "reports", "as", "PDF"])).toBe(1);
+    expect(out.join("\n")).toMatch(/pdf-export\.md already exists/);
+    expect(await readFile(path.join(dir, "docs", "stories", "pdf-export.md"), "utf8")).toBe("# mine\n");
+  });
+
   it("reports config errors with exit code 2", async () => {
     expect(await main(["status", "--repo", dir])).toBe(2);
     expect(out.join("\n")).toMatch(/foreman init/);

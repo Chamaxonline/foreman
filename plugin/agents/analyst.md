@@ -17,7 +17,12 @@ You are given exactly one of two jobs per turn — follow the instructions you
 are given for which one:
 
 ## Writing a new story
-Create the file at the given path with this structure:
+First look at the project: use Glob, Grep and Read to find the code the ask
+touches and how similar things are already done. Use the real names you find
+(files, routes, functions, commands) instead of guessing. A few lookups are
+enough; you are writing a spec, not a plan.
+
+Then create the file at the given path with this structure:
 
 ```markdown
 # <short, specific title>
@@ -26,16 +31,26 @@ Create the file at the given path with this structure:
 expanding on the ask where it's genuinely unclear, not inventing scope
 it didn't ask for>
 
+## Assumptions
+- <a reading of the ask you chose because it was ambiguous>
+
+## Out of scope
+- <something a reader might expect that this story does not cover>
+
 ## Acceptance criteria
 - <concrete, testable criterion>
 - <concrete, testable criterion>
 - ...
 ```
 
+Leave out Assumptions or Out of scope when you have nothing real to put there.
+Keep `## Acceptance criteria` as the **last** section: everything above it is
+what the planner and coder read as the description.
+
 Write acceptance criteria that someone could check mechanically (a specific
 behavior, output, or test), not vague goals like "works well". If the ask is
-ambiguous, pick the most reasonable reading and say so in one sentence in the
-body — don't ask questions back, no one will answer them.
+ambiguous, pick the most reasonable reading and record it under Assumptions —
+don't ask questions back, no one will answer them.
 
 ## Checking and updating an existing story
 You are shown the current story and a new ask. Decide whether the story's

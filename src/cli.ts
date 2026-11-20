@@ -5,13 +5,16 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { AuthError, type AuthMode } from "./claude.js";
+import { AuthError, resolveAuth, SdkAgentRunner, type AuthMode } from "./claude.js";
 import { CONFIG_FILE, ConfigError, loadConfig } from "./config.js";
 import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
 import { sleepAbortable, tailLog } from "./logs.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
+import { loadRoles } from "./roles.js";
 import { createRuntime } from "./runtime.js";
+import { makeProtectedMatcher } from "./safety.js";
+import { StoryError, writeStory } from "./story.js";
 import { acquireLock, LockError, StateStore, STATE_DIR, usageOf } from "./state.js";
 import { loadTasks, sortByPriority, TasksError } from "./tasks.js";
 import { configTemplate, detectProject, TASKS_TEMPLATE } from "./templates.js";
@@ -20,6 +23,7 @@ const HELP = `foreman: autonomous task → Claude → verified PR orchestrator
 
 Usage:
   foreman init [--force]              Write example foreman.config.yaml and tasks.yaml
+  foreman story "<idea>" [--id <name>] Turn an idea into a story file to review (writes no code)
   foreman run [--task <id>] [--retry] Process pending tasks once, then exit
   foreman dry-run [--task <id>]       Like run, but never pushes or opens PRs
   foreman watch                       Run continuously: process, idle, poll again
@@ -85,6 +89,7 @@ export async function main(argv: string[]): Promise<number> {
         interval: { type: "string" },
         follow: { type: "boolean", short: "f" },
         lines: { type: "string", short: "n" },
+        id: { type: "string" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -112,6 +117,18 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInit(repoDir, Boolean(o.force));
       case "status":
         return await cmdStatus(repoDir, Boolean(o.json));
+      case "story": {
+        const idea = positionals.slice(1).join(" ").trim();
+        if (!idea) {
+          console.error('Give the idea as text, e.g. foreman story "Let users export reports as PDF"');
+          return 2;
+        }
+        return await cmdStory(repoDir, idea, {
+          ...(o.id ? { id: o.id } : {}),
+          ...(o.auth ? { auth: o.auth } : {}),
+          forceUnlock: Boolean(o["force-unlock"]),
+        });
+      }
       case "logs": {
         const lines = o.lines ? Number(o.lines) : 40;
         if (!Number.isInteger(lines) || lines < 1) {
@@ -328,6 +345,63 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
     console.log(`  ${r.status.padEnd(11)} ${r.id.padEnd(24)} ${String(r.attempts).padStart(2)} att  $${r.costUsd.toFixed(2).padStart(6)}  ${r.title}${extra ? `  ${extra}` : ""}`);
   }
   return 0;
+}
+
+async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: string; forceUnlock: boolean }): Promise<number> {
+  const config = await loadConfig(repoDir);
+  const stateDir = path.join(repoDir, STATE_DIR);
+  // Same lock as run/watch: story spend is written to the shared state file.
+  const release = await acquireLock(stateDir, { force: o.forceUnlock });
+  const stop = new AbortController();
+  const onSignal = () => stop.abort();
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    const state = await StateStore.open(stateDir, { dayBoundary: config.dayBoundary });
+    const remaining = config.limits.maxSpendPerDayUsd - state.spentToday();
+    if (remaining <= 0) {
+      console.error(`Daily spend cap reached ($${state.spentToday().toFixed(2)} of $${config.limits.maxSpendPerDayUsd.toFixed(2)}). Try again after it resets.`);
+      return 1;
+    }
+    const auth = resolveAuth(o.auth ? parseAuthMode(o.auth) : config.agent.auth);
+    const roles = await loadRoles();
+    console.log(`Writing a story with ${config.models.analyst} (${auth.description})...`);
+    let result;
+    try {
+      result = await writeStory({
+        repoDir,
+        idea,
+        ...(o.id ? { id: o.id } : {}),
+        config,
+        agents: new SdkAgentRunner({ envPassthrough: config.agent.envPassthrough, sandbox: config.agent.sandbox, auth }),
+        systemPrompt: roles.analyst.prompt,
+        isProtected: makeProtectedMatcher(config),
+        maxBudgetUsd: Math.min(remaining, config.limits.maxSpendPerTaskUsd ?? Infinity),
+        signal: stop.signal,
+      });
+    } catch (e) {
+      if (e instanceof StoryError) {
+        if (e.costUsd > 0) await state.addSpend(e.costUsd);
+        console.error(e.message);
+        return 1;
+      }
+      throw e;
+    }
+    await state.addSpend(result.costUsd);
+    console.log(`\nWrote ${result.file}`);
+    console.log(`  ${result.title ?? "(no title found)"}`);
+    console.log(`  ${result.acceptance.length} acceptance criteria · $${result.costUsd.toFixed(2)}`);
+    if (!result.acceptance.length) console.log("  Warning: no acceptance criteria were found. Open the file and add them.");
+    console.log(`\nNext: read and edit it, then add a task that uses it to ${config.tasksFile}:`);
+    console.log(`  - id: ${result.id}`);
+    console.log(`    prompt: ${JSON.stringify(idea)}`);
+    if (!config.docs.enabled) console.log("Also set `docs.enabled: true` in foreman.config.yaml so tasks use story docs.");
+    return 0;
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    await release();
+  }
 }
 
 async function cmdLogs(repoDir: string, follow: boolean, lines: number): Promise<number> {

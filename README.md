@@ -211,6 +211,7 @@ export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: 
 | Command | What it does |
 |---|---|
 | `foreman init [--force]` | Writes an annotated `foreman.config.yaml` and an example `tasks.yaml`, and adds `.foreman/` to `.gitignore`. |
+| `foreman story "<idea>" [--id <name>]` | Turns a one-line idea into a story file under `docs.dir` and stops. No code is written. See [Story docs](#story-docs-giving-a-task-as-just-a-prompt). |
 | `foreman dry-run [--task <id>]` | The full loop, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman run [--task <id>] [--retry]` | Processes runnable tasks once, writes a report, then exits. `--retry` reruns a done or needs-human task from scratch. |
 | `foreman watch` | Continuous mode: processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
@@ -522,6 +523,22 @@ formal spec in sync with that ask, before any planning happens:
 This also means you can re-run the same task id with a different `prompt`
 later (or point a fresh task at the same ask) and foreman will extend the
 existing spec rather than starting over or duplicating it.
+
+**Starting from just an idea:** `foreman story "Let users export reports as
+PDF"` writes the story file for you and stops, so you can approve it before any
+code is written:
+
+- One analyst call runs in your checkout. It reads the relevant code first so
+  the criteria use real names, then writes `<docs.dir>/<name>.md` with the
+  context, any assumptions and out-of-scope notes, and the acceptance criteria.
+  It can't write anywhere else and has no Bash.
+- Nothing is committed, pushed or built. Read and edit the file, then add the
+  task the command prints to `tasks.yaml` and run foreman as usual. Set
+  `docs.enabled: true` so tasks use story docs.
+- The name comes from the first words of the idea; `--id <name>` picks another.
+  An existing story is never overwritten.
+- Its cost counts toward the daily spend cap, and it can't run while another
+  foreman process is working on the same repository.
 
 **From GitHub issues or Azure work items:** with `issues.enabled: true`, each
 open issue (or work item) carrying the label/tag becomes a task:
