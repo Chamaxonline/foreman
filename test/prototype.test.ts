@@ -106,7 +106,7 @@ describe("lockdownHtml", () => {
   });
 
   it("handles a document with no <head> and a bare fragment", () => {
-    expect(lockdownHtml("<html><body>hi</body></html>")).toMatch(/<html><head><meta http-equiv="Content-Security-Policy"[^>]*><\/head><body>hi/);
+    expect(lockdownHtml("<html><body>hi</body></html>")).toMatch(/<html>\s*<head><meta http-equiv="Content-Security-Policy"[^>]*><\/head><body>hi/);
     const frag = lockdownHtml("<div>hi</div>");
     expect(frag).toMatch(/^<!doctype html>/);
     expect(frag).toContain("Content-Security-Policy");

@@ -19,6 +19,7 @@ checks:
       reviewer: "opus",
       escalation: "opus",
       analyst: "opus",
+      designer: "opus",
     });
     expect(cfg.docs).toEqual({ enabled: false, dir: "docs/stories" });
     expect(cfg.limits.maxAttemptsPerTask).toBe(5);
