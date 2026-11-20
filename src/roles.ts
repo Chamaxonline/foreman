@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-export type Role = "planner" | "coder" | "reviewer" | "analyst" | "designer";
-export const ROLES: Role[] = ["planner", "coder", "reviewer", "analyst", "designer"];
+export type Role = "planner" | "coder" | "reviewer" | "analyst" | "designer" | "critic";
+export const ROLES: Role[] = ["planner", "coder", "reviewer", "analyst", "designer", "critic"];
 
 export interface RoleDefinition {
   name: Role;

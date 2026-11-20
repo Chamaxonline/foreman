@@ -258,6 +258,138 @@ export function prototypeRevisePrompt(story: { path: string; content: string }, 
     .join("\n");
 }
 
+// ---- prototype critique ---------------------------------------------------
+
+export interface CritiqueIssue {
+  severity: "major" | "minor";
+  where?: string;
+  problem: string;
+  fix: string;
+}
+
+export interface Critique {
+  /** False when the critic could not actually view the screenshots. */
+  sawScreenshots: boolean;
+  verdict: "approve" | "revise";
+  summary: string;
+  issues: CritiqueIssue[];
+}
+
+export const CRITIQUE_SCHEMA = {
+  type: "object",
+  properties: {
+    sawScreenshots: { type: "boolean" },
+    verdict: { type: "string", enum: ["approve", "revise"] },
+    summary: { type: "string" },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          severity: { type: "string", enum: ["major", "minor"] },
+          where: { type: "string" },
+          problem: { type: "string" },
+          fix: { type: "string" },
+        },
+        required: ["severity", "problem", "fix"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["sawScreenshots", "verdict", "summary", "issues"],
+  additionalProperties: false,
+} as const;
+
+/** Parse structured output, or fall back to a JSON object in text. Tolerant of loose issue entries. */
+export function parseCritique(structured: unknown, text: string): Critique | undefined {
+  const tryObj = (o: unknown): Critique | undefined => {
+    if (!o || typeof o !== "object") return undefined;
+    const c = o as Record<string, unknown>;
+    if (c.verdict !== "approve" && c.verdict !== "revise") return undefined;
+    const issues: CritiqueIssue[] = [];
+    if (Array.isArray(c.issues)) {
+      for (const raw of c.issues) {
+        if (!raw || typeof raw !== "object") continue;
+        const i = raw as Record<string, unknown>;
+        const problem = typeof i.problem === "string" ? i.problem.trim() : "";
+        if (!problem) continue;
+        issues.push({
+          severity: i.severity === "major" ? "major" : "minor",
+          ...(typeof i.where === "string" && i.where.trim() ? { where: i.where.trim() } : {}),
+          problem,
+          fix: typeof i.fix === "string" ? i.fix.trim() : "",
+        });
+      }
+    }
+    return { sawScreenshots: c.sawScreenshots !== false, verdict: c.verdict, summary: String(c.summary ?? ""), issues };
+  };
+  const s = tryObj(structured);
+  if (s) return s;
+  const m = text.match(/\{[\s\S]*"verdict"[\s\S]*\}/);
+  if (m) {
+    try {
+      return tryObj(JSON.parse(m[0]));
+    } catch {
+      /* fallthrough */
+    }
+  }
+  return undefined;
+}
+
+export interface CritiqueShot {
+  /** Repo-relative path the critic opens with Read. */
+  path: string;
+  description: string;
+}
+
+export function critiquePrompt(
+  story: { path: string; content: string },
+  shots: CritiqueShot[],
+  round: number,
+  consoleIssues: string[],
+  previous: CritiqueIssue[] = [],
+): string {
+  const lines = [
+    `# Review the prototype for ${story.path} (review ${round})`,
+    "",
+    "## The story",
+    "```markdown",
+    story.content.trim(),
+    "```",
+    "",
+    "## Screenshots to review",
+    "Open each image with the Read tool and look at it before you judge:",
+    ...shots.map((s) => `- \`${s.path}\`: ${s.description}`),
+    "Pages taller than the capture limit are cut off, and large images may be scaled down.",
+    "",
+  ];
+  if (consoleIssues.length) {
+    lines.push("## What the page logged in the browser", ...consoleIssues.map((c) => `- ${c}`), "");
+  }
+  if (previous.length) {
+    lines.push(
+      "## Reported last review, then revised by the designer",
+      "Check whether each of these is now fixed, and say so if it is not:",
+      ...previous.map((i) => `- [${i.severity}]${i.where ? ` (${i.where})` : ""} ${i.problem}`),
+      "",
+    );
+  }
+  lines.push("Return your verdict.");
+  return lines.join("\n");
+}
+
+/** The critic's issues, worded as feedback for the designer's revision. Majors first, at most eight. */
+export function critiqueFeedback(c: Critique): string {
+  const issues = [...c.issues].sort((a, b) => Number(b.severity === "major") - Number(a.severity === "major")).slice(0, 8);
+  return [
+    "A design review of screenshots of this prototype (desktop, mobile and dark mode) found problems. Fix them, major ones first, and keep everything that already works:",
+    ...issues.map((i) => `- [${i.severity}]${i.where ? ` (${i.where})` : ""} ${i.problem}${i.fix ? ` Fix: ${i.fix}` : ""}`),
+    c.summary.trim() ? `\nReviewer's summary: ${c.summary.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export const STORY_GAP_SCHEMA = {
   type: "object",
   properties: {

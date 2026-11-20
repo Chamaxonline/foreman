@@ -11,6 +11,8 @@ import { renderDashboardHtml } from "./dashboard.js";
 import { execFile } from "./exec.js";
 import { sleepAbortable, tailLog } from "./logs.js";
 import { summarizeModelUsage, type OutcomeStatus, type RunReport } from "./report.js";
+import { findBrowser, renderScreens } from "./browser.js";
+import { critiqueAndRefine, type CritiqueOutcome } from "./critique.js";
 import { parseStoryDoc } from "./prompts.js";
 import {
   approvePrototype,
@@ -54,6 +56,7 @@ Options:
   --watch               With dashboard: keep rewriting the file until Ctrl+C
   --interval <seconds>  With dashboard --watch: refresh interval (default 5)
   --feedback <text>     With prototype: what to change in an existing prototype
+  --no-critique         With prototype: skip the screenshot design review
   --force-unlock        Take over a lock held by another foreman process
   --auth <mode>         Claude credential: auto | subscription | api-key (overrides agent.auth)
   -v, --verbose         Print agent activity
@@ -104,6 +107,7 @@ export async function main(argv: string[]): Promise<number> {
         lines: { type: "string", short: "n" },
         id: { type: "string" },
         feedback: { type: "string" },
+        "no-critique": { type: "boolean" },
         verbose: { type: "boolean", short: "v" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },
@@ -152,6 +156,7 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdPrototype(repoDir, id, {
           ...(o.feedback ? { feedback: o.feedback } : {}),
           open: Boolean(o.open),
+          noCritique: Boolean(o["no-critique"]),
           ...(o.auth ? { auth: o.auth } : {}),
           forceUnlock: Boolean(o["force-unlock"]),
         });
@@ -495,10 +500,32 @@ function prototypeNext(id: string, state: PrototypeState, config: ForemanConfig)
   }
 }
 
+function printCritique(outcome: CritiqueOutcome): void {
+  const n = outcome.rounds.length;
+  console.log(`\nDesign review: ${n} review${n === 1 ? "" : "s"}, $${outcome.costUsd.toFixed(2)}`);
+  for (const r of outcome.rounds) {
+    const majors = r.critique.issues.filter((i) => i.severity === "major").length;
+    const minors = r.critique.issues.length - majors;
+    const found = r.critique.issues.length ? `${majors} major, ${minors} minor` : "no issues";
+    console.log(`  ${r.round}. ${r.critique.verdict === "approve" ? "approved" : "needed changes"} (${found})${r.revised ? ", fixed by the designer" : ""}`);
+  }
+  const last = outcome.rounds.at(-1);
+  if (last?.critique.issues.length) {
+    console.log(last.critique.verdict === "revise" ? "  Still open when it stopped:" : "  Notes:");
+    for (const i of last.critique.issues) console.log(`    [${i.severity}]${i.where ? ` (${i.where})` : ""} ${i.problem}`);
+  }
+  if (outcome.consoleIssues.length) {
+    console.log("  The page logged these in the browser:");
+    for (const c of outcome.consoleIssues) console.log(`    ${c}`);
+  }
+  if (outcome.stopped) console.log(`  Stopped early: ${outcome.stopped}`);
+  if (last) console.log(`  Screenshots the critic saw: ${outcome.screensDir}/`);
+}
+
 async function cmdPrototype(
   repoDir: string,
   id: string,
-  o: { feedback?: string; open: boolean; auth?: string; forceUnlock: boolean },
+  o: { feedback?: string; open: boolean; noCritique: boolean; auth?: string; forceUnlock: boolean },
 ): Promise<number> {
   if (!TASK_ID_RE.test(id) || id.includes("..")) {
     console.error(`"${id}" is not a usable story id: use 1-64 letters, digits, '.', '_' or '-'.`);
@@ -548,7 +575,37 @@ async function cmdPrototype(
       console.log("  Warning: it referenced outside resources. The browser blocks them, so it may not look as intended:");
       for (const ref of result.externalRefs) console.log(`    ${ref}`);
     }
-    console.log(prototypeNext(id, "draft", config));
+    const review = config.prototype.critique;
+    if (review.enabled && !o.noCritique) {
+      const explicit = config.prototype.browser ?? process.env.FOREMAN_BROWSER;
+      const browser = findBrowser(config.prototype.browser ? { configured: config.prototype.browser } : {});
+      if (!browser) {
+        console.log(
+          explicit
+            ? `\nSkipped the design review: the browser you set (${explicit}) was not found.`
+            : "\nSkipped the design review: no Chrome, Edge or Chromium was found. Install one, or set prototype.browser or FOREMAN_BROWSER. Pass --no-critique to silence this.",
+        );
+      } else {
+        console.log(
+          `\nReviewing the design in ${path.basename(browser)}: screenshots at desktop, mobile and dark mode, up to ${review.maxRevisions} fix round${review.maxRevisions === 1 ? "" : "s"}...`,
+        );
+        const outcome = await critiqueAndRefine({
+          repoDir,
+          id,
+          config,
+          agents: stage.agents,
+          designerPrompt: stage.roles.designer.prompt,
+          criticPrompt: stage.roles.critic.prompt,
+          isProtected: stage.isProtected,
+          maxBudgetUsd: stage.maxBudgetUsd - result.costUsd,
+          render: (htmlFile, outDir, prefix) => renderScreens(browser, htmlFile, outDir, prefix, { signal: stage.signal }),
+          signal: stage.signal,
+        });
+        await stage.state.addSpend(outcome.costUsd);
+        printCritique(outcome);
+      }
+    }
+    console.log(`\n${prototypeNext(id, "draft", config)}`);
     if (o.open) openInBrowser(file);
     return 0;
   } finally {

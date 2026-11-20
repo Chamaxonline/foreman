@@ -83,6 +83,7 @@ models:
   reviewer: opus     # optional review after checks pass (read-only)
   escalation: opus   # coder model after repeated failures
   designer: opus     # builds clickable prototypes (\`foreman prototype\`)
+  critic: opus       # reviews screenshots of a prototype (needs a vision-capable model)
 
 limits:
   maxAttemptsPerTask: 5
@@ -137,9 +138,14 @@ docs:
 # approve before the real build. It looks at your existing UI to match it; a
 # design brief (markdown with your colors, typography and spacing) makes it
 # match better. Commit the prototype folder so the build can see it.
+# After building one, foreman screenshots it (desktop, mobile, dark mode) in a
+# headless Chrome/Edge/Chromium and has a critic review it, sending problems
+# back to the designer. It is skipped when no such browser is installed.
 # prototype:
 #   dir: docs/prototypes
 #   designBrief: docs/design.md
+#   browser: /usr/bin/chromium        # optional: which browser to use
+#   critique: { enabled: true, maxRevisions: 2 }
 
 # Extra paths agents may never modify (CI, test/lint config, foreman files are always protected)
 protectedPaths: []

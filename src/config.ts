@@ -42,6 +42,8 @@ const modelsSchema = z
     analyst: z.string().default("opus"),
     /** Builds the clickable prototype for a story (`foreman prototype`). */
     designer: z.string().default("opus"),
+    /** Looks at screenshots of a prototype and critiques the design (needs a vision-capable model). */
+    critic: z.string().default("opus"),
   })
   .prefault({});
 
@@ -101,6 +103,20 @@ const prototypeSchema = z
      * it studies the project's existing UI code instead.
      */
     designBrief: z.string().min(1).optional(),
+    /**
+     * After building a prototype, render it in a headless browser (desktop,
+     * mobile, dark mode) and have a critic review the screenshots. Problems go
+     * back to the designer, up to `maxRevisions` times, before you see it.
+     * Skipped, with a note, when no Chrome/Edge/Chromium is found.
+     */
+    critique: z
+      .object({
+        enabled: z.boolean().default(true),
+        maxRevisions: z.number().int().min(1).max(5).default(2),
+      })
+      .prefault({}),
+    /** Path to a Chrome, Edge or Chromium executable; otherwise FOREMAN_BROWSER, then common install locations. */
+    browser: z.string().min(1).optional(),
   })
   .prefault({});
 

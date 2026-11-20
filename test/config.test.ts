@@ -20,6 +20,7 @@ checks:
       escalation: "opus",
       analyst: "opus",
       designer: "opus",
+      critic: "opus",
     });
     expect(cfg.docs).toEqual({ enabled: false, dir: "docs/stories" });
     expect(cfg.limits.maxAttemptsPerTask).toBe(5);
@@ -78,13 +79,27 @@ pr: { labels: [bot, foreman] }
 
   it("prototype defaults to docs/prototypes with no design brief, and designer defaults to opus", () => {
     const cfg = parseConfig(`checks: { test: npm test }`);
-    expect(cfg.prototype).toEqual({ dir: "docs/prototypes" });
+    expect(cfg.prototype).toEqual({ dir: "docs/prototypes", critique: { enabled: true, maxRevisions: 2 } });
     expect(cfg.models.designer).toBe("opus");
     const custom = parseConfig(
       `checks: { test: npm test }\nprototype: { dir: ui/protos, designBrief: docs/design.md }\nmodels: { designer: sonnet }`,
     );
-    expect(custom.prototype).toEqual({ dir: "ui/protos", designBrief: "docs/design.md" });
+    expect(custom.prototype).toEqual({
+      dir: "ui/protos",
+      designBrief: "docs/design.md",
+      critique: { enabled: true, maxRevisions: 2 },
+    });
     expect(custom.models.designer).toBe("sonnet");
+  });
+
+  it("the design review can be tuned or turned off, and has sane bounds", () => {
+    const off = parseConfig(`checks: { test: npm test }\nprototype: { critique: { enabled: false }, browser: /usr/bin/chromium }\nmodels: { critic: sonnet }`);
+    expect(off.prototype.critique).toEqual({ enabled: false, maxRevisions: 2 });
+    expect(off.prototype.browser).toBe("/usr/bin/chromium");
+    expect(off.models.critic).toBe("sonnet");
+    expect(parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxRevisions: 4 } }`).prototype.critique.maxRevisions).toBe(4);
+    expect(() => parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxRevisions: 0 } }`)).toThrow(/maxRevisions/);
+    expect(() => parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxRevisions: 6 } }`)).toThrow(/maxRevisions/);
   });
 
   it("accepts docs and analyst model overrides", () => {

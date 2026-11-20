@@ -213,7 +213,7 @@ export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: 
 |---|---|
 | `foreman init [--force]` | Writes an annotated `foreman.config.yaml` and an example `tasks.yaml`, and adds `.foreman/` to `.gitignore`. |
 | `foreman story "<idea>" [--id <name>]` | Turns a one-line idea into a story file under `docs.dir` and stops. No code is written. See [Story docs](#story-docs-giving-a-task-as-just-a-prompt). |
-| `foreman prototype <id> [--feedback "..."] [--open]` | Builds a clickable prototype of a story to approve, or revises it with feedback. See [From idea to product](#from-idea-to-product). |
+| `foreman prototype <id> [--feedback "..."] [--open] [--no-critique]` | Builds a clickable prototype of a story to approve, or revises it with feedback, then has a critic review screenshots of it. See [From idea to product](#from-idea-to-product). |
 | `foreman approve <id>` | Approves the prototype, so the real build can start. |
 | `foreman dry-run [--task <id>]` | The full loop, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman run [--task <id>] [--retry]` | Processes runnable tasks once, writes a report, then exits. `--retry` reruns a done or needs-human task from scratch. |
@@ -434,6 +434,7 @@ models:                         # aliases (opus, sonnet, haiku) or full model ID
   escalation: opus              # coder model after repeated failures
   analyst: opus                 # writes/updates story docs (see docs.enabled below)
   designer: opus                # builds prototypes (see From idea to product)
+  critic: opus                  # reviews screenshots of a prototype; needs a vision-capable model
 
 limits:
   maxAttemptsPerTask: 5
@@ -459,7 +460,11 @@ agent:
   sandbox: true                 # Claude Code's OS-level Bash sandbox, where supported
   envPassthrough: []            # extra env vars for agents (e.g. Bedrock/Vertex config)
 docs:     { enabled: false, dir: docs/stories }   # see Story docs, under Tasks
-prototype: { dir: docs/prototypes }        # optional: designBrief: docs/design.md (your colors, type, spacing)
+prototype:
+  dir: docs/prototypes
+  # designBrief: docs/design.md   # your colors, type, spacing; the designer follows it
+  # browser: /usr/bin/chromium    # Chrome/Edge/Chromium for the design review; else FOREMAN_BROWSER, else found automatically
+  critique: { enabled: true, maxRevisions: 2 }   # screenshot review, and how many times the designer may be sent back
 protectedPaths: []              # extra globs agents may never modify
 dayBoundary: utc                # utc | local; when the daily cap resets
 ```
@@ -599,6 +604,20 @@ to the next step on its own.
 - **It can't call out.** foreman adds a Content-Security-Policy to the page, so
   the browser blocks every network request from it, however it was written. If
   the agent referenced outside resources, the command tells you.
+- **A design review before you see it.** After building (or revising), foreman
+  renders the page in a headless Chrome, Edge or Chromium at desktop, mobile
+  and dark mode, each at the page's real height. A *critic* agent
+  (`models.critic`, read-only) looks at those screenshots against your story and
+  a design rubric: hierarchy, spacing, contrast, responsiveness, dark mode,
+  missing states and the generic look. Its problems go back to the designer, up
+  to `prototype.critique.maxRevisions` times (default 2), and the last review
+  always looks at the final version. What it found and what is still open is
+  printed, and the screenshots it saw are in `.foreman/screens/<id>/`. It also
+  reports script errors and blocked requests the page logged. Each review is one
+  more vision call and each fix one more designer call, all within your spend
+  limits. It needs a browser installed (set `prototype.browser` or
+  `FOREMAN_BROWSER` to pick one); without one it is skipped with a note. Turn it
+  off with `--no-critique` or `prototype.critique.enabled: false`.
 - **Approval** records a hash of the exact `index.html` in `approval.json`.
   Editing the file afterwards makes the approval stale, and `--feedback` withdraws
   it. Agents can't write `approval.json`; it is a protected path.
@@ -645,7 +664,8 @@ prompts.
 | No deleting or skipping tests | The diff gate rejects deleted test files, tests moved out of the suite, a net loss of test cases, added `.skip` / `.only` / `xit` / `@pytest.mark.skip` / `t.Skip` / `#[ignore]` / `@Disabled` markers, and runner flags like `--passWithNoTests`. |
 | Limited tools | `permissionMode: dontAsk` with an explicit tool list. Web, subagent and MCP tools are removed. Only the coder gets Bash, and it only runs the configured check commands and read-only git, with no `;`, `&&`, `\|`, `$()` or redirects. The planner, reviewer and analyst have no Bash at all, and the planner and reviewer are read-only. |
 | A role can be scoped to one folder | The analyst (story docs) can only write inside `docs.dir`, and the designer (prototypes) only inside its own `prototype.dir/<id>/` folder. Neither has Bash, and writes anywhere else are denied the same way protected paths are. |
-| Prototypes can't call out, or approve themselves | foreman adds a Content-Security-Policy to every prototype, so the browser blocks all network requests from it. `approval.json` is a protected path, so only `foreman approve` can write it, and it covers one exact version of `index.html`. |
+| Prototypes can't call out, or approve themselves | foreman adds a Content-Security-Policy to every prototype, so the browser blocks all network requests from it, including when foreman renders it for the design review. `approval.json` is a protected path, so only `foreman approve` can write it, and it covers one exact version of `index.html`. |
+| The critic only reads | It has Read, Glob and Grep and no Bash or write access, and it works from screenshots foreman took. If it says it could not view them, the review stops instead of approving unseen work. |
 | The repo can't loosen the rules | `settingSources: []`, so the target repo's `.claude/` settings and hooks are ignored. |
 | No credentials | The agent environment is rebuilt from an allowlist. `GITHUB_TOKEN`, `GH_TOKEN`, Azure DevOps tokens (`AZURE_DEVOPS_*`, `SYSTEM_ACCESSTOKEN`), npm tokens, cloud secrets, `*_DEPLOY_*` and `ACTIONS_*` variables are never passed. Checks run with the same scrubbed environment, minus the Claude credential. |
 
@@ -700,10 +720,11 @@ interactively:
 - **Subagents** `planner` (opus, read-only), `coder` (sonnet), `reviewer`
   (opus, read-only), `analyst` (opus; writes/updates story docs — see
   [Story docs](#story-docs-giving-a-task-as-just-a-prompt), write access
-  limited to the docs folder) and `designer` (opus; builds prototypes — see
+  limited to the docs folder), `designer` (opus; builds prototypes — see
   [From idea to product](#from-idea-to-product), write access limited to the
-  prototype folder). The runner uses these same files as its role prompts, so
-  editing them changes both.
+  prototype folder) and `critic` (opus, read-only; reviews screenshots of a
+  prototype). The runner uses these same files as its role prompts, so editing
+  them changes both.
 - **`/foreman <task-id | description>`**: plan, implement, run the checks and
   review, without committing or pushing.
 - **Hooks:**
@@ -733,6 +754,7 @@ adds it to `.git/info/exclude`.
 | `state.json` (+ `.bak`) | Per-task status, attempts, history, cost, PR links; daily spend; runs. Written atomically. |
 | `reports/run-<id>.md` / `.json` | Run report. `latest.md` and `latest.json` point at the newest run. |
 | `dashboard.html` | The page written by `foreman dashboard` |
+| `screens/<id>/` | The screenshots from the last design review of a prototype (`r1-desktop.png`, `r1-mobile.png`, `r1-desktop-dark.png`, then `r2-...` after a fix) |
 | `logs/foreman.log` | Runner log (read it with `foreman logs`) |
 | `logs/<run-id>/<task>.log` | Full prompts, tool calls and results for each task |
 | `worktrees/` | Task worktrees, removed after each task unless `--keep-worktrees` is set |
@@ -760,6 +782,7 @@ Layout:
 - `src/github.ts`, `src/azure.ts`: the GitHub and Azure DevOps host implementations
 - `src/state.ts`: persistence, including the per-call usage ledger
 - `src/story.ts`, `src/prototype.ts`: the idea-to-story and story-to-prototype stages, and the approval gate
+- `src/browser.ts`, `src/critique.ts`: headless-browser screenshots, and the critic/designer review loop
 - `src/report.ts`, `src/dashboard.ts`, `src/logs.ts`: run reports, the HTML dashboard and `foreman logs`
 
 Tests mock Claude and the repository host. git runs for real against temporary

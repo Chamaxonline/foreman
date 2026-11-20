@@ -99,7 +99,7 @@ export type AgentScript = (call: AgentCall, n: number) => Partial<AgentResult> |
 
 export class FakeAgents implements AgentRunner {
   calls: AgentCall[] = [];
-  private counts: Record<Role, number> = { planner: 0, coder: 0, reviewer: 0, analyst: 0, designer: 0 };
+  private counts: Record<Role, number> = { planner: 0, coder: 0, reviewer: 0, analyst: 0, designer: 0, critic: 0 };
   constructor(private readonly scripts: Partial<Record<Role, AgentScript>> = {}) {}
 
   async run(call: AgentCall): Promise<AgentResult> {
@@ -108,7 +108,7 @@ export class FakeAgents implements AgentRunner {
     const defaults: AgentResult = {
       ok: true,
       text:
-        call.role === "planner" ? "1. do the thing" : call.role === "reviewer" || call.role === "analyst" || call.role === "designer" ? "" : "Implemented it.",
+        call.role === "planner" ? "1. do the thing" : call.role === "reviewer" || call.role === "analyst" || call.role === "designer" || call.role === "critic" ? "" : "Implemented it.",
       costUsd: 0.1,
       sessionId: `${call.role}-${call.model}-${n}`,
       turns: 1,
@@ -215,6 +215,7 @@ export const roles: Record<Role, RoleDefinition> = {
   reviewer: { name: "reviewer", description: "", tools: [], prompt: "REVIEWER" },
   analyst: { name: "analyst", description: "", tools: [], prompt: "ANALYST" },
   designer: { name: "designer", description: "", tools: [], prompt: "DESIGNER" },
+  critic: { name: "critic", description: "", tools: [], prompt: "CRITIC" },
 };
 
 export function makeConfig(extra = ""): ForemanConfig {
