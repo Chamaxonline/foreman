@@ -1,7 +1,7 @@
 {
   "name": "foreman",
   "displayName": "foreman",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Planner / coder / reviewer subagents, a /foreman command to work a task interactively, and hooks that protect CI/test config and run the project's checks before Claude stops.",
   "author": { "name": "chamathran" },
   "license": "MIT",

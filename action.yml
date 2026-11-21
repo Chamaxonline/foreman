@@ -44,7 +44,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   version:
-    description: claude-foreman version from npm (e.g. 0.1.0). Empty = build this action's own source.
+    description: claude-foreman version from npm (e.g. 0.2.0). Empty = build this action's own source.
     required: false
     default: ""
   node-version:
