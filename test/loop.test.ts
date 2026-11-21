@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { LivePatch } from "../src/live.js";
 import { TaskRunner } from "../src/loop.js";
 import { StateStore } from "../src/state.js";
 import { errorSignature } from "../src/stuck.js";
@@ -570,6 +571,63 @@ describe("TaskRunner: task.checks (run a subset of configured checks)", () => {
     expect(agents.calls).toHaveLength(0);
     expect(made.world.worktrees).toBe(0);
     expect(made.state.get("t1")!.status).toBe("failed");
+  });
+});
+
+describe("TaskRunner: live status", () => {
+  function sink() {
+    const patches: LivePatch[] = [];
+    const lines: string[] = [];
+    return { patches, lines, set: (p: LivePatch) => void patches.push(p), activity: (l: string) => void lines.push(l) };
+  }
+
+  it("reports each stage of a run in order, forwards what the agents do, and ends idle", async () => {
+    let world!: World;
+    const live = sink();
+    const agents = new FakeAgents({
+      coder: (call) => {
+        call.onEvent?.("[tool] Edit src/a.ts");
+        world.edit("src/a.ts");
+        return {};
+      },
+    });
+    const made = await makeDeps({ agents, live });
+    world = made.world;
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out.status).toBe("done");
+
+    expect(live.patches.map((p) => p.stage).filter(Boolean)).toEqual([
+      "Starting the task",
+      "Preparing the workspace",
+      "Planning the change",
+      "Writing the code",
+      "Running your checks",
+      "Reviewing the change",
+      "Committing and opening the pull request",
+      "Waiting for the next task",
+    ]);
+    expect(live.patches.map((p) => p.step).filter(Boolean)).toEqual(["setup", "plan", "code", "checks", "review", "ship"]);
+    expect(live.patches[0]).toMatchObject({ idle: false, taskId: "t1", maxAttempts: 5 });
+    expect(live.patches.find((p) => p.stage === "Writing the code")).toMatchObject({ role: "coder", model: "sonnet", step: "code" });
+    expect(live.patches).toContainEqual({ attempt: 1, maxAttempts: 5 });
+    expect(live.lines).toContain("[tool] Edit src/a.ts");
+    expect(live.patches.at(-1)).toMatchObject({ idle: true, stage: "Waiting for the next task" });
+  });
+
+  it("goes idle again when a task fails or stops, so the dashboard never shows stale work", async () => {
+    let world!: World;
+    const live = sink();
+    const agents = new FakeAgents({ coder: () => (world.edit("src/a.ts"), {}) });
+    const made = await makeDeps({ agents, live, checks: new FakeChecks(() => failingRun("same")) });
+    world = made.world;
+    const out = await new TaskRunner(made.deps).runTask(makeTask());
+    expect(out.status).toBe("needs_human");
+    expect(live.patches.at(-1)).toMatchObject({ idle: true, stage: "Waiting for the next task" });
+  });
+
+  it("works with no live sink at all", async () => {
+    const made = await makeDeps();
+    expect((await new TaskRunner(made.deps).runTask(makeTask())).status).toBe("done");
   });
 });
 

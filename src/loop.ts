@@ -23,6 +23,7 @@ import {
   type ReviewVerdict,
 } from "./prompts.js";
 import { failureReport, historyTable, successPrBody, type OutcomeStatus, type TaskOutcome } from "./report.js";
+import type { LivePatch, LiveSink, Step } from "./live.js";
 import { decideGate, prototypeLayout, stateFromFiles, type PrototypeState } from "./prototype.js";
 import type { Role, RoleDefinition } from "./roles.js";
 import type { AttemptRecord, StateStore } from "./state.js";
@@ -99,6 +100,8 @@ export interface LoopDeps {
   keepWorktrees?: boolean;
   /** State of a task's prototype in the user's own checkout (not the worktree). Absent: treated as none. */
   localPrototypeState?: (taskId: string) => Promise<PrototypeState>;
+  /** Told what the runner is doing, so a dashboard can show it. */
+  live?: LiveSink;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -117,6 +120,16 @@ export class RateLimitError extends Error {
 }
 
 const FINISHED = new Set(["done", "needs_human", "failed"]);
+
+/** What a person is told while each agent role is working, and which step of a task run that is. */
+const ROLE_STAGE: Record<Role, { stage: string; step?: Step }> = {
+  planner: { stage: "Planning the change", step: "plan" },
+  coder: { stage: "Writing the code", step: "code" },
+  reviewer: { stage: "Reviewing the change", step: "review" },
+  analyst: { stage: "Writing the story" },
+  designer: { stage: "Designing the prototype" },
+  critic: { stage: "Reviewing the design" },
+};
 
 export function backoffMs(errorCount: number): number {
   return Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, errorCount - 1));
@@ -198,6 +211,17 @@ export class TaskRunner {
       notBefore: undefined,
     });
     d.log.info(`▶ ${task.id}: ${task.title}`);
+    this.live({
+      idle: false,
+      taskId: task.id,
+      title: task.title,
+      stage: "Starting the task",
+      step: undefined,
+      role: undefined,
+      model: undefined,
+      attempt: undefined,
+      maxAttempts: d.config.limits.maxAttemptsPerTask,
+    });
 
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), d.config.limits.maxMinutesPerTask * 60_000);
@@ -235,6 +259,16 @@ export class TaskRunner {
     } finally {
       clearTimeout(timer);
       if (!d.keepWorktrees) await d.git.removeWorktree(task.id).catch(() => undefined);
+      this.live({
+        idle: true,
+        taskId: undefined,
+        title: undefined,
+        stage: "Waiting for the next task",
+        step: undefined,
+        role: undefined,
+        model: undefined,
+        attempt: undefined,
+      });
     }
   }
 
@@ -272,6 +306,7 @@ export class TaskRunner {
     }
 
     // ---- setup: install dependencies etc. so the agent can run checks itself ----
+    this.live({ stage: "Preparing the workspace", step: "setup", role: undefined, model: undefined });
     const setup = await d.checks.setup(ctx.dir, ctx.signal);
     if (!setup.ok) {
       if (ctx.signal.aborted) return this.stopForLimit(ctx, "time");
@@ -328,6 +363,7 @@ export class TaskRunner {
 
       const n = cur.attempts + 1;
       await d.state.updateTask(task.id, { attempts: n });
+      this.live({ attempt: n, maxAttempts: cfg.limits.maxAttemptsPerTask });
       const escalated = failures >= cfg.limits.escalateAfterFailures;
       const model = escalated ? cfg.models.escalation : (task.model ?? cfg.models.coder);
 
@@ -407,6 +443,7 @@ export class TaskRunner {
       }
 
       // ---- checks (run by the runner, never trusted from the agent) ----------
+      this.live({ stage: "Running your checks", step: "checks", role: undefined, model: undefined });
       const run = await d.checks.run(ctx.dir, ctx.signal, task.checks);
       ctx.lastChecks = run.results;
       if (ctx.signal.aborted) {
@@ -447,6 +484,7 @@ export class TaskRunner {
 
       // ---- ship ----------------------------------------------------------------
       await this.record(ctx, n, model, "pass", "checks passed", r.costUsd);
+      this.live({ stage: "Committing and opening the pull request", step: "ship", role: undefined, model: undefined });
       const summary = r.text.trim();
       const diffStat = await d.git.diffStat(ctx.dir, ctx.baseSha);
       const sha = (await d.git.hasStagedChanges(ctx.dir))
@@ -590,6 +628,10 @@ export class TaskRunner {
     };
   }
 
+  private live(patch: LivePatch): void {
+    this.d.live?.set(patch);
+  }
+
   private reader(ctx: Ctx): FileReader {
     return {
       before: (p) => this.d.git.readFileAt(ctx.dir, ctx.baseSha, p),
@@ -608,6 +650,7 @@ export class TaskRunner {
     const d = this.d;
     ctx.models.push(model);
     ctx.tlog(`\n===== ${role} (${model}) =====\n${prompt}\n`);
+    this.live({ ...ROLE_STAGE[role], role, model });
     const r = await d.agents.run({
       role,
       model,
@@ -623,7 +666,10 @@ export class TaskRunner {
       isProtected: ctx.task.prototypeDir ? protecting(d.isProtected, ctx.task.prototypeDir) : d.isProtected,
       maxTurns: d.config.limits.maxTurnsPerCall,
       signal: ctx.signal,
-      onEvent: ctx.tlog,
+      onEvent: (line) => {
+        ctx.tlog(line);
+        d.live?.activity(line);
+      },
       ...extra,
     });
     await d.state.addSpend(r.costUsd, ctx.task.id, d.runId, { role, model });
@@ -669,6 +715,7 @@ export class TaskRunner {
     const start = this.now();
     const deadline = start + cfg.timeoutMinutes * 60_000;
     this.d.log.info(`  waiting for CI on ${ref.sha.slice(0, 8)}…`);
+    this.live({ stage: "Waiting for CI on the pull request", step: "ship", role: undefined, model: undefined });
     for (;;) {
       await this.sleep(cfg.pollSeconds * 1000, signal);
       if (signal.aborted) return { state: "pending", details: "" };

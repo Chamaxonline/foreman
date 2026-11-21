@@ -207,7 +207,7 @@ describe("Orchestrator.runOnce: model usage", () => {
       },
     });
     const report = await orch.runOnce();
-    expect(report.modelUsage).toEqual([{ model: "opus", calls: 2, costUsd: 0.6, pctOfCost: 100 }]);
+    expect(report.modelUsage).toEqual([{ model: "opus", calls: 2, roles: ["coder", "reviewer"], costUsd: 0.6, pctOfCost: 100 }]);
   });
 
   it("is [] when nothing has any attempt history", async () => {

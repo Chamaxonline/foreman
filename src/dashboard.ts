@@ -1,4 +1,7 @@
+import { formatDuration, STEPS, type LiveView, type Step } from "./live.js";
+import { PROTOTYPE_LABEL } from "./prototype.js";
 import type { ModelUsage } from "./report.js";
+import type { StorySummary } from "./story.js";
 
 export interface DashboardTaskRow {
   id: string;
@@ -7,6 +10,8 @@ export interface DashboardTaskRow {
   attempts: number;
   costUsd: number;
   prUrl?: string;
+  /** Why a task that is not done is waiting or stopped. */
+  lastError?: string | undefined;
 }
 
 export interface DashboardSummary {
@@ -16,6 +21,9 @@ export interface DashboardSummary {
   dailyCapUsd: number;
   modelUsage: ModelUsage[];
   lastRun?: { id: string; costUsd: number; dryRun: boolean } | undefined;
+  /** What foreman is doing right now, if it is running. */
+  live?: LiveView | undefined;
+  stories?: StorySummary[];
   tasks: DashboardTaskRow[];
 }
 
@@ -64,7 +72,7 @@ function modelBars(usage: ModelUsage[]): string {
         </div>
         <div class="bar-label">
           <strong>${esc(u.model)}</strong>
-          <span class="muted">${u.calls} call${u.calls === 1 ? "" : "s"} · $${u.costUsd.toFixed(2)} · ${u.pctOfCost.toFixed(1)}%</span>
+          <span class="muted">${u.calls} call${u.calls === 1 ? "" : "s"} · $${u.costUsd.toFixed(2)} · ${u.pctOfCost.toFixed(1)}%${u.roles?.length ? ` · ${esc(u.roles.join(", "))}` : ""}</span>
         </div>
       </div>`;
     })
@@ -78,11 +86,78 @@ function taskRows(tasks: DashboardTaskRow[]): string {
       (t) => `
     <tr>
       <td><code>${esc(t.id)}</code></td>
-      <td>${esc(t.title)}</td>
+      <td>${esc(t.title)}${t.lastError && t.status !== "done" ? `<div class="note">${esc(t.lastError.slice(0, 220))}</div>` : ""}</td>
       <td>${statusPill(t.status)}</td>
       <td class="num">${t.attempts}</td>
       <td class="num">$${t.costUsd.toFixed(2)}</td>
       <td>${t.prUrl ? `<a href="${esc(t.prUrl)}">PR</a>` : ""}</td>
+    </tr>`,
+    )
+    .join("\n");
+}
+
+const STEP_LABEL: Record<Step, string> = { setup: "Setup", plan: "Plan", code: "Code", checks: "Checks", review: "Review", ship: "Ship" };
+
+/**
+ * The top card: whether foreman is working right now, on what, at which step,
+ * and the last few things it did. Everything here comes from the agents and the
+ * files they touched, so it is all escaped.
+ */
+function liveCard(live: LiveView | undefined): string {
+  if (!live?.running) {
+    return `<div class="card live">
+    <div class="live-head"><span class="dot dot-off" aria-hidden="true"></span><strong>Not running</strong></div>
+    <p class="muted" style="margin:8px 0 0">Start work with <code>foreman run</code>, <code>foreman watch</code>, <code>foreman story</code> or <code>foreman prototype</code>.</p>
+  </div>`;
+  }
+  const running = `running for ${formatDuration(live.secondsRunning)}`;
+  if (!live.working) {
+    return `<div class="card live">
+    <div class="live-head"><span class="dot dot-wait" aria-hidden="true"></span><strong>Waiting</strong><span class="muted">foreman ${esc(live.command)} · ${running}</span></div>
+    <p class="muted" style="margin:8px 0 0">${esc(live.stage)}. Nothing to work on right now.</p>
+  </div>`;
+  }
+  const detail = [
+    live.model ? esc(live.model) : "",
+    live.attempt && live.maxAttempts ? `attempt ${live.attempt} of ${live.maxAttempts}` : "",
+    `${formatDuration(live.secondsInStage)} in this step`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const current = live.step ? STEPS.indexOf(live.step) : -1;
+  const steps =
+    current >= 0
+      ? `<ol class="steps" aria-label="Progress">${STEPS.map(
+          (s, i) => `<li class="${i < current ? "done" : i === current ? "current" : ""}">${STEP_LABEL[s]}</li>`,
+        ).join("")}</ol>`
+      : "";
+  const heading = live.title ?? live.taskId;
+  const quiet = (live.secondsSinceActivity ?? 0) > 90;
+  const latest = live.lastActivity
+    ? `<div class="live-now"><span class="muted">Latest action:</span> ${esc(live.lastActivity)} <span class="muted">(${formatDuration(live.secondsSinceActivity ?? 0)} ago${quiet ? ", the model is thinking" : ""})</span></div>`
+    : `<div class="live-now muted">Waiting for the first action...</div>`;
+  const recent = live.recent.length ? `<ul class="recent">${[...live.recent].reverse().slice(0, 6).map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : "";
+  return `<div class="card live">
+    <div class="live-head"><span class="dot dot-live" aria-hidden="true"></span><strong>Working</strong><span class="muted">foreman ${esc(live.command)} · ${running}</span></div>
+    ${heading ? `<div class="live-title">${esc(heading)}${live.taskId && live.title ? ` <code>${esc(live.taskId)}</code>` : ""}</div>` : ""}
+    <div class="live-stage">${esc(live.stage)} <span class="muted">· ${detail}</span></div>
+    ${steps}
+    ${latest}
+    ${recent}
+  </div>`;
+}
+
+const PROTOTYPE_PILL: Record<string, string> = { none: "muted", draft: "warning", approved: "good", stale: "warning" };
+
+function storyRows(stories: StorySummary[]): string {
+  return stories
+    .map(
+      (s) => `
+    <tr>
+      <td><code>${esc(s.id)}</code></td>
+      <td>${esc(s.title)}</td>
+      <td><span class="pill pill-${PROTOTYPE_PILL[s.prototype] ?? "muted"}">${esc(PROTOTYPE_LABEL[s.prototype])}</span></td>
+      <td class="num">$${s.costUsd.toFixed(2)}</td>
     </tr>`,
     )
     .join("\n");
@@ -140,7 +215,7 @@ ${refreshSeconds ? `<meta http-equiv="refresh" content="${refreshSeconds}">\n` :
   .bar-fill { height: 100%; border-radius: 4px; min-width: 2px; }
   .bar-label { display: flex; justify-content: space-between; font-size: 13px; }
   .bar-label strong { font-weight: 600; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
   .pill-good { background: var(--status-good); }
   .pill-warning { background: var(--status-warning); color: #0b0b0b; }
   .pill-critical { background: var(--status-critical); }
@@ -151,12 +226,37 @@ ${refreshSeconds ? `<meta http-equiv="refresh" content="${refreshSeconds}">\n` :
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   code { font-size: 12px; background: var(--page); padding: 1px 5px; border-radius: 4px; }
   a { color: var(--m0); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .live-head { display: flex; align-items: center; gap: 10px; font-size: 15px; flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .dot-live { background: var(--status-good); animation: pulse 1.6s ease-out infinite; }
+  .dot-wait { background: var(--status-warning); }
+  .dot-off { background: var(--muted); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(12,163,12,.55); }
+    70% { box-shadow: 0 0 0 9px rgba(12,163,12,0); }
+    100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot-live { animation: none; } }
+  .live-title { font-size: 18px; font-weight: 600; margin: 12px 0 2px; }
+  .live-stage { color: var(--text-2); }
+  .steps { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 14px 0 0; }
+  .steps li { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .steps li.done { color: var(--text-2); }
+  .steps li.done::before { content: "\\2713  "; }
+  .steps li.current { background: var(--text); color: var(--surface); border-color: var(--text); font-weight: 600; }
+  .steps li.current::before { content: "\\25CF  "; }
+  .live-now { margin-top: 14px; font-size: 14px; }
+  .recent { list-style: none; margin: 10px 0 0; padding: 10px 12px; background: var(--page); border: 1px solid var(--border); border-radius: 8px; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--text-2); }
+  .recent li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>foreman</h1>
   <p class="sub">${esc(s.repo)} · generated ${esc(generatedAt)}</p>
+
+  ${liveCard(s.live)}
 
   <div class="card">
     <h2>Spend today</h2>
@@ -175,7 +275,20 @@ ${refreshSeconds ? `<meta http-equiv="refresh" content="${refreshSeconds}">\n` :
   <div class="card">
     <h2>Model usage (by cost share)</h2>
     ${modelBars(s.modelUsage)}
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Counts every agent call: stories, prototypes, design reviews and builds.</p>
   </div>
+
+  ${
+    s.stories?.length
+      ? `<div class="card">
+    <h2>Stories and prototypes</h2>
+    <table>
+      <thead><tr><th>Story</th><th>Title</th><th>Prototype</th><th class="num">Spent</th></tr></thead>
+      <tbody>${storyRows(s.stories)}</tbody>
+    </table>
+  </div>`
+      : ""
+  }
 
   <div class="card">
     <h2>Tasks</h2>

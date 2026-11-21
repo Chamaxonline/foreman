@@ -29,6 +29,8 @@ export interface CritiqueRequest {
   render: Renderer;
   signal?: AbortSignal;
   onEvent?: (line: string) => void;
+  /** Called as the loop moves between its steps, so a person can see what it is doing. */
+  onStage?: (stage: { label: string; role?: string; model?: string }) => void;
 }
 
 export interface CritiqueRound {
@@ -42,6 +44,8 @@ export interface CritiqueRound {
 
 export interface CritiqueOutcome {
   rounds: CritiqueRound[];
+  /** Every agent call the loop made, so each can be counted against its model. */
+  calls: Array<{ role: "critic" | "designer"; model: string; costUsd: number }>;
   costUsd: number;
   /** Errors and blocked requests the page logged in the final render. */
   consoleIssues: string[];
@@ -68,13 +72,14 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
   const story = { path: layout.story, content: (await readFile(path.join(repoDir, layout.story), "utf8").catch(() => "")) ?? "" };
 
   const rounds: CritiqueRound[] = [];
+  const calls: CritiqueOutcome["calls"] = [];
   let spent = 0;
   let consoleIssues: string[] = [];
   let layoutIssues: string[] = [];
   let stopped: string | undefined;
   let previous: CritiqueIssue[] = [];
   const left = () => req.maxBudgetUsd - spent;
-  const done = (): CritiqueOutcome => ({ rounds, costUsd: spent, consoleIssues, layoutIssues, screensDir, ...(stopped ? { stopped } : {}) });
+  const done = (): CritiqueOutcome => ({ rounds, calls, costUsd: spent, consoleIssues, layoutIssues, screensDir, ...(stopped ? { stopped } : {}) });
 
   await rm(screensAbs, { recursive: true, force: true }).catch(() => undefined);
 
@@ -83,6 +88,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
     if (req.signal?.aborted) return ((stopped = "Interrupted."), done());
     if (left() < 0.05) return ((stopped = "The spend limit was reached."), done());
 
+    req.onStage?.({ label: round === 1 ? "Taking screenshots of the prototype" : "Taking new screenshots" });
     let rendered: RenderResult;
     try {
       rendered = await req.render(path.join(repoDir, layout.index), screensAbs, `r${round}`);
@@ -98,6 +104,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
     }));
 
     let critique: Critique | undefined;
+    req.onStage?.({ label: `The critic is reviewing the design (review ${round})`, role: "critic", model: cfg.models.critic });
     try {
       const r = await req.agents.run({
         role: "critic",
@@ -116,6 +123,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
         ...(req.onEvent ? { onEvent: req.onEvent } : {}),
       });
       spent += r.costUsd;
+      calls.push({ role: "critic", model: cfg.models.critic, costUsd: r.costUsd });
       if (r.subtype === "rate_limited") return ((stopped = "Claude usage limit reached."), done());
       if (r.subtype === "exception") return ((stopped = `The critic call failed: ${r.error ?? "unknown error"}`), done());
       critique = r.ok ? parseCritique(r.structured, r.text) : undefined;
@@ -145,6 +153,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
       return ((stopped = "The spend limit was reached before the designer could fix the issues."), done());
     }
 
+    req.onStage?.({ label: `The designer is fixing the issues (fix ${revision + 1} of ${maxRevisions})`, role: "designer", model: cfg.models.designer });
     try {
       const rev = await writePrototype({
         repoDir,
@@ -159,8 +168,12 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
         ...(req.onEvent ? { onEvent: req.onEvent } : {}),
       });
       spent += rev.costUsd;
+      calls.push({ role: "designer", model: cfg.models.designer, costUsd: rev.costUsd });
     } catch (e) {
-      if (e instanceof PrototypeError) spent += e.costUsd;
+      if (e instanceof PrototypeError) {
+        spent += e.costUsd;
+        if (e.costUsd > 0) calls.push({ role: "designer", model: cfg.models.designer, costUsd: e.costUsd });
+      }
       rounds.push({ round, critique, revised: false, screens: shotPaths });
       return ((stopped = `The designer's fix did not go through: ${(e as Error).message}`), done());
     }

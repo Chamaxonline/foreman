@@ -1,8 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./claude.js";
 import type { ForemanConfig } from "./config.js";
 import { parseStoryDoc, storyWritePrompt } from "./prompts.js";
+import { localPrototypeState, type PrototypeState } from "./prototype.js";
 import { TASK_ID_RE, taskSchema, type Task } from "./tasks.js";
 
 /** Why a story could not be written. `costUsd` is whatever the attempt still spent. */
@@ -110,4 +111,47 @@ export async function writeStory(req: StoryRequest): Promise<StoryResult> {
   }
   const parsed = parseStoryDoc(content);
   return { id, file, ...(parsed.title ? { title: parsed.title } : {}), acceptance: parsed.acceptance, costUsd: r.costUsd };
+}
+
+export interface StorySummary {
+  id: string;
+  title: string;
+  prototype: PrototypeState;
+  /** What the story stage (story, prototype, design review) has cost so far. */
+  costUsd: number;
+  calls: number;
+}
+
+/**
+ * The stories in the user's checkout, newest first, with each one's prototype
+ * state and what it has cost so far. `costs` comes from `stageCosts(state)`.
+ */
+export async function listStories(
+  repoDir: string,
+  cfg: ForemanConfig,
+  costs: Record<string, { costUsd: number; calls: number }>,
+  limit = 12,
+): Promise<StorySummary[]> {
+  const dir = path.join(repoDir, cfg.docs.dir);
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const rows: Array<StorySummary & { modified: number }> = [];
+  for (const name of names) {
+    if (!name.endsWith(".md")) continue;
+    const id = name.slice(0, -".md".length);
+    if (!TASK_ID_RE.test(id) || id.includes("..")) continue;
+    const file = path.join(dir, name);
+    const [text, info] = await Promise.all([readFile(file, "utf8").catch(() => ""), stat(file).catch(() => undefined)]);
+    rows.push({
+      id,
+      title: parseStoryDoc(text).title ?? id,
+      prototype: await localPrototypeState(repoDir, cfg, id),
+      costUsd: costs[id]?.costUsd ?? 0,
+      calls: costs[id]?.calls ?? 0,
+      modified: info?.mtimeMs ?? 0,
+    });
+  }
+  return rows
+    .sort((a, b) => b.modified - a.modified)
+    .slice(0, limit)
+    .map(({ modified: _modified, ...row }) => row);
 }

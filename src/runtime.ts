@@ -10,6 +10,7 @@ import { Git, githubGitAuth, parseGitHubRemote, type GitHttpAuth } from "./git.j
 import { OctokitGitHub } from "./github.js";
 import type { HostKind, RepoHost } from "./host.js";
 import { TaskRunner, type Logger } from "./loop.js";
+import { LiveWriter } from "./live.js";
 import { Orchestrator } from "./orchestrator.js";
 import { localPrototypeState } from "./prototype.js";
 import { loadRoles } from "./roles.js";
@@ -20,6 +21,8 @@ import { loadTasks, parseTasks, type Task } from "./tasks.js";
 export interface RuntimeOptions {
   repoDir: string;
   dryRun: boolean;
+  /** run, dry-run or watch: shown on the dashboard. */
+  command?: string;
   verbose?: boolean;
   keepWorktrees?: boolean;
   /** Read tasks.yaml from the remote base branch instead of the working tree. */
@@ -156,6 +159,8 @@ export interface Runtime {
   log: Logger;
   orchestrator: Orchestrator;
   stateDir: string;
+  /** Publishes what the run is doing to .foreman/live.json. Call clear() when finished. */
+  live: LiveWriter;
 }
 
 export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
@@ -163,6 +168,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
   const config = await loadConfig(repoDir);
   const stateDir = path.join(repoDir, STATE_DIR);
   const log = makeLogger(path.join(stateDir, "logs", "foreman.log"), opts.verbose);
+  const live = new LiveWriter(path.join(stateDir, "live.json"), { command: opts.command ?? (opts.dryRun ? "dry-run" : "run") }, { stripPaths: [repoDir] });
   const state = await StateStore.open(stateDir, { dayBoundary: config.dayBoundary });
 
   const remoteUrl = await new Git(repoDir, config.remote, config.baseBranch).remoteUrl().catch(() => "");
@@ -220,6 +226,7 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
         dryRun: opts.dryRun,
         log,
         localPrototypeState: (taskId) => localPrototypeState(repoDir, config, taskId),
+        live,
         keepWorktrees: opts.keepWorktrees ?? false,
         taskLog: (taskId) => {
           const file = path.join(stateDir, "logs", runId, `${taskId}.log`);
@@ -236,5 +243,5 @@ export async function createRuntime(opts: RuntimeOptions): Promise<Runtime> {
       }),
   });
 
-  return { config, state, git, ...(host ? { host } : {}), log, orchestrator, stateDir };
+  return { config, state, git, ...(host ? { host } : {}), log, orchestrator, stateDir, live };
 }

@@ -17,6 +17,7 @@ import { parseStoryDoc } from "./prompts.js";
 import {
   approvePrototype,
   localPrototypeState,
+  PROTOTYPE_LABEL,
   PrototypeError,
   prototypeLayout,
   writePrototype,
@@ -25,8 +26,9 @@ import {
 import { loadRoles } from "./roles.js";
 import { createRuntime } from "./runtime.js";
 import { makeProtectedMatcher } from "./safety.js";
-import { StoryError, writeStory } from "./story.js";
-import { acquireLock, LockError, StateStore, STATE_DIR, usageOf } from "./state.js";
+import { listStories, StoryError, storyIdFromIdea, writeStory } from "./story.js";
+import { formatDuration, LiveWriter, readLive, type LiveView } from "./live.js";
+import { acquireLock, isStageKey, LockError, stageCosts, StateStore, STATE_DIR, usageOf } from "./state.js";
 import { loadTasks, sortByPriority, TASK_ID_RE, TasksError } from "./tasks.js";
 import { configTemplate, detectProject, TASKS_TEMPLATE } from "./templates.js";
 
@@ -54,7 +56,7 @@ Options:
   --tasks-from-remote   Read tasks.yaml from <remote>/<baseBranch> instead of the working tree
   --keep-worktrees      Keep task worktrees in .foreman/worktrees for debugging
   --watch               With dashboard: keep rewriting the file until Ctrl+C
-  --interval <seconds>  With dashboard --watch: refresh interval (default 5)
+  --interval <seconds>  With dashboard --watch: refresh interval (default 3)
   --feedback <text>     With prototype: what to change in an existing prototype
   --no-critique         With prototype: skip the screenshot design review
   --force-unlock        Take over a lock held by another foreman process
@@ -178,7 +180,7 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdLogs(repoDir, Boolean(o.follow), lines);
       }
       case "dashboard": {
-        const interval = o.interval ? Number(o.interval) : 5;
+        const interval = o.interval ? Number(o.interval) : 3;
         if (!Number.isFinite(interval) || interval <= 0) {
           console.error("--interval must be a positive number of seconds");
           return 2;
@@ -258,15 +260,19 @@ async function cmdRun(repoDir: string, f: RunFlags): Promise<number> {
   process.on("SIGINT", sigint);
   process.on("SIGTERM", sigterm);
 
+  let live: { clear(): Promise<void> } | undefined;
   try {
     const rt = await createRuntime({
       repoDir,
       dryRun: f.dryRun,
+      command: f.watch ? "watch" : f.dryRun ? "dry-run" : "run",
       verbose: f.verbose,
       keepWorktrees: f.keepWorktrees,
       tasksFromRemote: f.tasksFromRemote,
       ...(f.auth ? { auth: parseAuthMode(f.auth) } : {}),
     });
+    live = rt.live;
+    rt.live.set({ idle: true, stage: f.watch ? "Watching for tasks" : "Looking for tasks to run" });
     if (f.dryRun) rt.log.info("DRY RUN: nothing will be pushed and no PRs will be opened.");
     if (f.watch) {
       await rt.orchestrator.watch(stop.signal, { onCycle: (r) => r.tasks.length && printSummary(r) });
@@ -283,6 +289,7 @@ async function cmdRun(repoDir: string, f: RunFlags): Promise<number> {
   } finally {
     process.off("SIGINT", sigint);
     process.off("SIGTERM", sigterm);
+    await live?.clear();
     await release();
   }
 }
@@ -337,8 +344,9 @@ async function loadStatusSummary(repoDir: string) {
       notBefore: s?.notBefore,
     };
   });
-  // tasks known to state but no longer in tasks.yaml (e.g. from issues)
+  // tasks known to state but no longer in tasks.yaml (e.g. from issues); story-stage spend is shown under Stories
   for (const s of Object.values(snap.tasks)) {
+    if (isStageKey(s.id)) continue;
     if (!rows.some((r) => r.id === s.id)) {
       rows.push({ id: s.id, title: "(not in tasks file)", priority: 0, status: s.status, attempts: s.attempts, costUsd: s.costUsd, prUrl: s.prUrl, lastError: s.lastError, notBefore: s.notBefore });
     }
@@ -355,8 +363,24 @@ async function loadStatusSummary(repoDir: string) {
     dailyCapUsd: config.limits.maxSpendPerDayUsd,
     modelUsage,
     lastRun,
+    live: await readLive(path.join(repoDir, STATE_DIR, "live.json")),
+    stories: await listStories(repoDir, config, stageCosts(snap.tasks)),
     tasks: rows,
   };
+}
+
+/** One line for what foreman is doing right now. */
+function describeNow(live: LiveView | undefined): string {
+  if (!live?.running) return "not running";
+  if (!live.working) return "running, waiting for the next task";
+  const detail = [
+    live.model,
+    live.attempt && live.maxAttempts ? `attempt ${live.attempt} of ${live.maxAttempts}` : undefined,
+    `${formatDuration(live.secondsInStage)} in this step`,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `working${live.title ?? live.taskId ? ` on ${live.title ?? live.taskId}` : ""}: ${live.stage} (${detail})`;
 }
 
 async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
@@ -369,13 +393,21 @@ async function cmdStatus(repoDir: string, json: boolean): Promise<number> {
   console.log("Models configured:");
   for (const [role, model] of Object.entries(summary.models)) console.log(`  ${role.padEnd(10)} ${model}`);
   console.log("");
+  console.log(`Now:         ${describeNow(summary.live)}`);
   console.log(`Spend today: $${summary.spentTodayUsd.toFixed(2)} / $${summary.dailyCapUsd.toFixed(2)}`);
   if (lastRun) console.log(`Last run:    ${lastRun.id} ($${lastRun.costUsd.toFixed(2)}${lastRun.dryRun ? ", dry run" : ""})`);
   console.log("");
   if (modelUsage.length) {
-    console.log("Model usage (tracked agent calls across all tasks):");
+    console.log("Model usage (every agent call: stories, prototypes, reviews and builds):");
     for (const u of modelUsage) {
-      console.log(`  ${u.model.padEnd(10)} ${String(u.calls).padStart(3)} calls  $${u.costUsd.toFixed(2).padStart(6)}  ${u.pctOfCost.toFixed(1).padStart(5)}%`);
+      console.log(`  ${u.model.padEnd(10)} ${String(u.calls).padStart(3)} calls  $${u.costUsd.toFixed(2).padStart(6)}  ${u.pctOfCost.toFixed(1).padStart(5)}%${u.roles ? `  ${u.roles.join(", ")}` : ""}`);
+    }
+    console.log("");
+  }
+  if (summary.stories.length) {
+    console.log("Stories and prototypes:");
+    for (const s of summary.stories) {
+      console.log(`  ${s.id.padEnd(24)} ${PROTOTYPE_LABEL[s.prototype].padEnd(24)} $${s.costUsd.toFixed(2).padStart(6)}  ${s.title}`);
     }
     console.log("");
   }
@@ -448,6 +480,10 @@ async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: 
   const stage = await startStage(repoDir, o);
   if (typeof stage === "number") return stage;
   const { config, state } = stage;
+  const id = o.id ?? storyIdFromIdea(idea);
+  const analyst = { role: "analyst", model: config.models.analyst };
+  const live = new LiveWriter(path.join(repoDir, STATE_DIR, "live.json"), { command: "story" }, { stripPaths: [repoDir] });
+  live.set({ idle: false, taskId: id, title: idea.slice(0, 100), stage: "Writing the story", ...analyst });
   try {
     console.log(`Writing a story with ${config.models.analyst} (${stage.authDescription})...`);
     let result;
@@ -455,23 +491,24 @@ async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: 
       result = await writeStory({
         repoDir,
         idea,
-        ...(o.id ? { id: o.id } : {}),
+        id,
         config,
         agents: stage.agents,
         systemPrompt: stage.roles.analyst.prompt,
         isProtected: stage.isProtected,
         maxBudgetUsd: stage.maxBudgetUsd,
         signal: stage.signal,
+        onEvent: (line) => live.activity(line),
       });
     } catch (e) {
       if (e instanceof StoryError) {
-        if (e.costUsd > 0) await state.addSpend(e.costUsd);
+        if (e.costUsd > 0) await state.addStageSpend(id, { ...analyst, costUsd: e.costUsd });
         console.error(e.message);
         return 1;
       }
       throw e;
     }
-    await state.addSpend(result.costUsd);
+    await state.addStageSpend(result.id, { ...analyst, costUsd: result.costUsd });
     console.log(`\nWrote ${result.file}`);
     console.log(`  ${result.title ?? "(no title found)"}`);
     console.log(`  ${result.acceptance.length} acceptance criteria · $${result.costUsd.toFixed(2)}`);
@@ -484,6 +521,7 @@ async function cmdStory(repoDir: string, idea: string, o: { id?: string; auth?: 
     if (!config.docs.enabled) console.log("Also set `docs.enabled: true` in foreman.config.yaml so tasks use story docs.");
     return 0;
   } finally {
+    await live.clear();
     await stage.done();
   }
 }
@@ -549,6 +587,10 @@ async function cmdPrototype(
 
   const stage = await startStage(repoDir, o);
   if (typeof stage === "number") return stage;
+  const designer = { role: "designer", model: config.models.designer };
+  const title = parseStoryDoc(await readFile(path.join(repoDir, layout.story), "utf8").catch(() => "")).title ?? id;
+  const live = new LiveWriter(path.join(repoDir, STATE_DIR, "live.json"), { command: "prototype" }, { stripPaths: [repoDir] });
+  live.set({ idle: false, taskId: id, title, stage: o.feedback ? "Revising the prototype" : "Designing the prototype", ...designer });
   try {
     console.log(`${o.feedback ? "Revising" : "Building"} the prototype with ${config.models.designer} (${stage.authDescription}). This can take a few minutes...`);
     let result;
@@ -563,16 +605,17 @@ async function cmdPrototype(
         isProtected: stage.isProtected,
         maxBudgetUsd: stage.maxBudgetUsd,
         signal: stage.signal,
+        onEvent: (line) => live.activity(line),
       });
     } catch (e) {
       if (e instanceof PrototypeError) {
-        if (e.costUsd > 0) await stage.state.addSpend(e.costUsd);
+        if (e.costUsd > 0) await stage.state.addStageSpend(id, { ...designer, costUsd: e.costUsd });
         console.error(e.message);
         return 1;
       }
       throw e;
     }
-    await stage.state.addSpend(result.costUsd);
+    await stage.state.addStageSpend(id, { ...designer, costUsd: result.costUsd });
     console.log(`\n${result.revised ? "Revised" : "Wrote"} ${layout.index} · $${result.costUsd.toFixed(2)}`);
     console.log(`  ${file}`);
     if (result.externalRefs.length) {
@@ -605,8 +648,13 @@ async function cmdPrototype(
           render: (htmlFile, outDir, prefix) =>
             renderScreens(browser, htmlFile, outDir, prefix, { signal: stage.signal, maxScreens: review.maxScreens }),
           signal: stage.signal,
+          onEvent: (line) => live.activity(line),
+          onStage: (s) => {
+            live.set({ stage: s.label, role: s.role, model: s.model });
+            console.log(`  ${s.label}...`);
+          },
         });
-        await stage.state.addSpend(outcome.costUsd);
+        for (const call of outcome.calls) await stage.state.addStageSpend(id, call);
         printCritique(outcome);
       }
     }
@@ -614,6 +662,7 @@ async function cmdPrototype(
     if (o.open) openInBrowser(file);
     return 0;
   } finally {
+    await live.clear();
     await stage.done();
   }
 }

@@ -58,8 +58,27 @@ export interface TaskState {
 }
 
 /** A task's model usage: the per-call ledger, or attempt history for state that predates it. */
-export function usageOf(t: TaskState): Array<{ model: string; costUsd: number }> {
+export function usageOf(t: TaskState): Array<{ model: string; costUsd: number; role?: string }> {
   return t.usage?.length ? t.usage : t.history;
+}
+
+/**
+ * Spend on the story stage (story, prototype, design review) is kept under this
+ * key rather than the build task's, so it counts toward model usage and the daily
+ * cap without eating into the build's own per-task budget.
+ */
+export const stageKey = (storyId: string): string => `story:${storyId}`;
+export const isStageKey = (key: string): boolean => key.startsWith("story:");
+
+/** Story-stage cost and call count per story id. */
+export function stageCosts(tasks: Record<string, TaskState>): Record<string, { costUsd: number; calls: number }> {
+  const out: Record<string, { costUsd: number; calls: number }> = {};
+  for (const [key, t] of Object.entries(tasks)) {
+    if (!isStageKey(key)) continue;
+    const ledger = t.usage ?? [];
+    out[key.slice("story:".length)] = { costUsd: round(ledger.reduce((sum, u) => sum + u.costUsd, 0)), calls: ledger.length };
+  }
+  return out;
 }
 
 export interface RunRecord {
@@ -237,6 +256,11 @@ export class StateStore {
       }
     }
     await this.save();
+  }
+
+  /** Record one story-stage agent call (analyst, designer or critic) against its story. */
+  async addStageSpend(storyId: string, call: { role: string; model: string; costUsd: number }): Promise<void> {
+    await this.addSpend(call.costUsd, stageKey(storyId), undefined, { role: call.role, model: call.model });
   }
 
   nextDayStart(): Date {

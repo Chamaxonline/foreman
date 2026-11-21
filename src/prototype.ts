@@ -23,6 +23,14 @@ export class PrototypeError extends Error {
  */
 export type PrototypeState = "none" | "draft" | "approved" | "stale";
 
+/** How each state reads to a person. */
+export const PROTOTYPE_LABEL: Record<PrototypeState, string> = {
+  none: "No prototype",
+  draft: "Needs your approval",
+  approved: "Approved",
+  stale: "Changed since approval",
+};
+
 export interface PrototypeLayout {
   /** Repo-relative POSIX paths. */
   dir: string;

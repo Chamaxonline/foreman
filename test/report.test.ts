@@ -33,6 +33,21 @@ describe("summarizeModelUsage", () => {
     ]);
   });
 
+  it("lists which roles used each model when the records say, and leaves it out when they don't", () => {
+    const usage = summarizeModelUsage([
+      [
+        { model: "opus", costUsd: 1, role: "reviewer" },
+        { model: "opus", costUsd: 1, role: "planner" },
+        { model: "opus", costUsd: 1, role: "planner" },
+        { model: "sonnet", costUsd: 1, role: "coder" },
+        { model: "haiku", costUsd: 0.5 },
+      ],
+    ]);
+    expect(usage.find((u) => u.model === "opus")!.roles).toEqual(["planner", "reviewer"]);
+    expect(usage.find((u) => u.model === "sonnet")!.roles).toEqual(["coder"]);
+    expect(usage.find((u) => u.model === "haiku")).not.toHaveProperty("roles");
+  });
+
   it("breaks cost ties by call count, then alphabetically", () => {
     const usage = summarizeModelUsage([[rec("zebra", 1), rec("alpha", 1), rec("mid", 1), rec("mid", 0)]]);
     expect(usage.map((u) => u.model)).toEqual(["mid", "alpha", "zebra"]);

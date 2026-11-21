@@ -227,6 +227,38 @@ describe("critiqueAndRefine", () => {
     expect(a.critic()[0]!.prompt).toContain("Uncaught TypeError: x is null");
   });
 
+  it("lists every agent call it made with its role and model, and reports each step as it goes", async () => {
+    const a = agents({ critic: [structured(verdict({ verdict: "revise", issues: [issue()] })), structured(verdict())] });
+    const stages: string[] = [];
+    const out = await critiqueAndRefine(req(a, { onStage: (s) => stages.push(`${s.label}|${s.role ?? ""}|${s.model ?? ""}`) }));
+
+    expect(out.calls).toEqual([
+      { role: "critic", model: "opus", costUsd: 0.3 },
+      { role: "designer", model: "opus", costUsd: 0.5 },
+      { role: "critic", model: "opus", costUsd: 0.3 },
+    ]);
+    expect(out.calls.reduce((sum, c) => sum + c.costUsd, 0)).toBeCloseTo(out.costUsd);
+    expect(stages).toEqual([
+      "Taking screenshots of the prototype||",
+      "The critic is reviewing the design (review 1)|critic|opus",
+      "The designer is fixing the issues (fix 1 of 2)|designer|opus",
+      "Taking new screenshots||",
+      "The critic is reviewing the design (review 2)|critic|opus",
+    ]);
+  });
+
+  it("counts a designer fix that failed but still cost something", async () => {
+    const a = agents({
+      critic: [structured(verdict({ verdict: "revise", issues: [issue()] }))],
+      designer: () => ({ ok: false, subtype: "exception", error: "api down", costUsd: 0.04 }),
+    });
+    const out = await critiqueAndRefine(req(a));
+    expect(out.calls).toEqual([
+      { role: "critic", model: "opus", costUsd: 0.3 },
+      { role: "designer", model: "opus", costUsd: 0.04 },
+    ]);
+  });
+
   it("gives measured layout facts to the critic as defects and to the designer to fix first", async () => {
     const fact = "At 390px wide the page scrolls sideways: its content is 620px wide. Sticking out past the screen: div#tabs.tabs (reaches 620px, 620px wide).";
     const a = agents({ critic: [structured(verdict({ verdict: "revise", issues: [issue()] })), structured(verdict())] });

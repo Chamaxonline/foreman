@@ -255,6 +255,7 @@ export async function makeDeps(over: Partial<LoopDeps> & { configYaml?: string; 
     log: silentLogger,
     sleep: async () => {},
     ...(over.localPrototypeState ? { localPrototypeState: over.localPrototypeState } : {}),
+    ...(over.live ? { live: over.live } : {}),
     ...(over.now ? { now: over.now } : {}),
   };
   return { deps, world, state, dir };

@@ -7,7 +7,10 @@ import {
   dayKey,
   LockError,
   MAX_RECOVERIES,
+  isStageKey,
   nextDayStart,
+  stageCosts,
+  stageKey,
   StateStore,
   usageOf,
 } from "../src/state.js";
@@ -157,6 +160,24 @@ describe("spend tracking", () => {
 
     const s2 = await StateStore.open(dir); // survives restart
     expect(s2.get("a")!.usage).toHaveLength(2);
+  });
+
+  it("story-stage spend counts toward model usage and the daily cap, but stays apart from the build task", async () => {
+    const s = await StateStore.open(dir);
+    await s.addStageSpend("tickets", { role: "analyst", model: "opus", costUsd: 0.4 });
+    await s.addStageSpend("tickets", { role: "designer", model: "opus", costUsd: 0.9 });
+    await s.addStageSpend("tickets", { role: "critic", model: "sonnet", costUsd: 0.1 });
+    await s.addStageSpend("other", { role: "analyst", model: "opus", costUsd: 0.25 });
+
+    expect(s.spentToday()).toBeCloseTo(1.65);
+    expect(s.get(stageKey("tickets"))!.usage!.map((u) => `${u.role}:${u.model}`)).toEqual(["analyst:opus", "designer:opus", "critic:sonnet"]);
+    expect(s.get("tickets")).toBeUndefined(); // no build task was created, so it can't eat a build's per-task budget
+    expect(stageCosts(s.snapshot().tasks)).toEqual({ tickets: { costUsd: 1.4, calls: 3 }, other: { costUsd: 0.25, calls: 1 } });
+    expect(isStageKey(stageKey("x"))).toBe(true);
+    expect(isStageKey("x")).toBe(false);
+
+    const again = await StateStore.open(dir); // survives restart
+    expect(stageCosts(again.snapshot().tasks).tickets).toEqual({ costUsd: 1.4, calls: 3 });
   });
 
   it("usageOf falls back to attempt history for state from before the ledger existed", async () => {

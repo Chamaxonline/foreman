@@ -218,7 +218,7 @@ export GITHUB_TOKEN=$(gh auth token)                    # or, for Azure DevOps: 
 | `foreman dry-run [--task <id>]` | The full loop, but never pushes and never opens PRs. Commits only exist in a throwaway worktree. |
 | `foreman run [--task <id>] [--retry]` | Processes runnable tasks once, writes a report, then exits. `--retry` reruns a done or needs-human task from scratch. |
 | `foreman watch` | Continuous mode: processes, idles for `watch.pollSeconds`, then polls again. Pauses until the next day when the daily cap is reached. |
-| `foreman status [--json]` | A snapshot: models per role, spend against the daily cap, usage by model, and each task's status, attempts, cost and PR. |
+| `foreman status [--json]` | A snapshot: what foreman is doing right now, spend against the daily cap, usage by model, each story's prototype state, and each task's status, attempts, cost and PR. |
 | `foreman logs [-f] [-n <lines>]` | The end of the run log (40 lines by default). `-f` keeps following it. |
 | `foreman dashboard [--open] [--watch]` | The same data as `status`, as a local HTML page. See below. |
 
@@ -229,16 +229,32 @@ touching it:
 
 - **`foreman logs -f`** streams `.foreman/logs/foreman.log`: every task,
   attempt, tool call, check result and PR as it happens.
-- **`foreman status`** is a one-off snapshot of spend, usage by model and task
-  states.
-- **`foreman dashboard --watch --open`** writes `.foreman/dashboard.html` (a
-  spend meter, a model-usage bar chart and the task table) every 5 seconds
-  (`--interval <seconds>`), and the open page reloads itself. Without `--watch`
-  it writes one snapshot. It's a plain local file: nothing is hosted or sent
-  anywhere, and `--open` only launches your default browser. Stop with Ctrl+C.
+- **`foreman status`** is a one-off snapshot: what foreman is doing right now,
+  spend, usage by model, stories and task states.
+- **`foreman dashboard --watch --open`** writes `.foreman/dashboard.html` every 3
+  seconds (`--interval <seconds>`), and the open page reloads itself. Without
+  `--watch` it writes one snapshot. It's a plain local file: nothing is hosted
+  or sent anywhere, and `--open` only launches your default browser. Stop with
+  Ctrl+C. The page shows:
+  - **What it's doing right now** at the top: a pulsing **Working** indicator,
+    the task or story, the step it's on (setup, plan, code, checks, review,
+    ship), the model, the attempt and how long it has been on this step, plus the
+    latest action and the few before it (the file it just read or edited). It says
+    **Waiting** when foreman is running with nothing to do, and **Not running**
+    otherwise. Between actions it notes when the model is still thinking.
+  - **Model usage as percentages**, with the roles that used each model.
+  - **Stories and prototypes**: each story, whether its prototype needs your
+    approval, and what it has cost.
+  - A spend meter, and the task table with the reason a task is waiting.
 
-Usage by model counts every agent call (planner, coder, reviewer, analyst)
-against the model that made it, as a share of estimated cost.
+Usage by model counts every agent call (planner, coder, reviewer, analyst,
+designer, critic) against the model that made it, as a share of estimated cost.
+That includes the story, prototype and design-review calls, so the percentages
+cover the whole path from idea to PR.
+
+While a run is going, foreman keeps `.foreman/live.json` up to date (and deletes
+it when it stops). `foreman story` and `foreman prototype` publish to it too, so
+they are no longer silent while they work.
 
 **Useful flags:**
 - `--repo <dir>`: target a repository other than the current directory.
@@ -767,6 +783,7 @@ adds it to `.git/info/exclude`.
 | `state.json` (+ `.bak`) | Per-task status, attempts, history, cost, PR links; daily spend; runs. Written atomically. |
 | `reports/run-<id>.md` / `.json` | Run report. `latest.md` and `latest.json` point at the newest run. |
 | `dashboard.html` | The page written by `foreman dashboard` |
+| `live.json` | What a running foreman is doing right now. Exists only while it runs; the dashboard reads it. |
 | `screens/<id>/` | The screenshots from the last design review of a prototype (`r1-desktop.png`, `r1-mobile.png`, `r1-desktop-dark.png`, plus `r1-<screen>-desktop.png` and `-mobile.png` for each declared screen, then `r2-...` after a fix) |
 | `logs/foreman.log` | Runner log (read it with `foreman logs`) |
 | `logs/<run-id>/<task>.log` | Full prompts, tool calls and results for each task |
@@ -797,6 +814,7 @@ Layout:
 - `src/story.ts`, `src/prototype.ts`: the idea-to-story and story-to-prototype stages, and the approval gate
 - `src/browser.ts`, `src/critique.ts`: headless-browser screenshots, and the critic/designer review loop
 - `src/report.ts`, `src/dashboard.ts`, `src/logs.ts`: run reports, the HTML dashboard and `foreman logs`
+- `src/live.ts`: the live-status file the dashboard reads
 
 Tests mock Claude and the repository host. git runs for real against temporary
 repositories.

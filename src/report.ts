@@ -45,6 +45,8 @@ export interface ModelUsage {
   costUsd: number;
   /** 0-100. 0 for every model when nothing in the set has a nonzero cost. */
   pctOfCost: number;
+  /** Which roles used this model (planner, coder, ...), sorted. Omitted when the records don't say. */
+  roles?: string[];
 }
 
 /**
@@ -52,14 +54,15 @@ export interface ModelUsage {
  * `usageOf`), sorted by cost descending. `pctOfCost` is each model's share of
  * the total cost across everything passed in, not of your whole account spend.
  */
-export function summarizeModelUsage(lists: Array<Array<{ model: string; costUsd: number }>>): ModelUsage[] {
-  const byModel = new Map<string, { calls: number; costUsd: number }>();
+export function summarizeModelUsage(lists: Array<Array<{ model: string; costUsd: number; role?: string }>>): ModelUsage[] {
+  const byModel = new Map<string, { calls: number; costUsd: number; roles: Set<string> }>();
   let total = 0;
   for (const list of lists) {
     for (const h of list) {
-      const cur = byModel.get(h.model) ?? { calls: 0, costUsd: 0 };
+      const cur = byModel.get(h.model) ?? { calls: 0, costUsd: 0, roles: new Set<string>() };
       cur.calls++;
       cur.costUsd += h.costUsd;
+      if (h.role) cur.roles.add(h.role);
       byModel.set(h.model, cur);
       total += h.costUsd;
     }
@@ -68,6 +71,7 @@ export function summarizeModelUsage(lists: Array<Array<{ model: string; costUsd:
     .map(([model, v]) => ({
       model,
       calls: v.calls,
+      ...(v.roles.size ? { roles: [...v.roles].sort() } : {}),
       costUsd: round(v.costUsd),
       // 1 decimal place: its only consumers (modelUsageTable, `foreman
       // status`) display it that way; storing more would just be noise.

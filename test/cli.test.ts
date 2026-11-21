@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
 import { parseConfig } from "../src/config.js";
+import { LiveWriter } from "../src/live.js";
 import { StateStore } from "../src/state.js";
 import { parseTasks } from "../src/tasks.js";
 import { detectProject } from "../src/templates.js";
@@ -95,8 +96,8 @@ describe("cli", () => {
     expect(await main(["status", "--repo", dir, "--json"])).toBe(0);
     const j = JSON.parse(out.join("\n"));
     expect(j.modelUsage).toEqual([
-      { model: "opus", calls: 2, costUsd: 0.33, pctOfCost: 70.2 },
-      { model: "sonnet", calls: 1, costUsd: 0.14, pctOfCost: 29.8 },
+      { model: "opus", calls: 2, roles: ["planner", "reviewer"], costUsd: 0.33, pctOfCost: 70.2 },
+      { model: "sonnet", calls: 1, roles: ["coder"], costUsd: 0.14, pctOfCost: 29.8 },
     ]);
   });
 
@@ -247,6 +248,77 @@ describe("cli", () => {
     out = [];
     expect(await main(["prototype", "--repo", dir, "pdf"])).toBe(0);
     expect(out.join("\n")).toMatch(/pdf is stale/);
+  });
+
+  it("status says what foreman is doing right now", async () => {
+    await main(["init", "--repo", dir]);
+    out = [];
+    await main(["status", "--repo", dir]);
+    expect(out.join("\n")).toMatch(/Now:\s+not running/);
+
+    const live = new LiveWriter(path.join(dir, ".foreman", "live.json"), { command: "run" }, { minIntervalMs: 5 });
+    live.set({ taskId: "example-readme-badge", title: "Add a badge", stage: "Writing the code", step: "code", model: "sonnet", attempt: 2, maxAttempts: 5 });
+    await live.flush();
+    out = [];
+    await main(["status", "--repo", dir]);
+    expect(out.join("\n")).toMatch(/Now:\s+working on Add a badge: Writing the code \(sonnet, attempt 2 of 5, \d+s in this step\)/);
+
+    live.set({ idle: true, stage: "Waiting for the next task", taskId: undefined, title: undefined });
+    await live.flush();
+    out = [];
+    await main(["status", "--repo", dir]);
+    expect(out.join("\n")).toMatch(/Now:\s+running, waiting for the next task/);
+
+    out = [];
+    await main(["dashboard", "--repo", dir]);
+    expect(await readFile(path.join(dir, ".foreman", "dashboard.html"), "utf8")).toContain("<strong>Waiting</strong>");
+    await live.clear();
+  });
+
+  it("status and the dashboard count story-stage spend by model and list each story with its prototype", async () => {
+    await main(["init", "--repo", dir]);
+    await mkdir(path.join(dir, "docs", "stories"), { recursive: true });
+    await mkdir(path.join(dir, "docs", "prototypes", "tickets"), { recursive: true });
+    await writeFile(path.join(dir, "docs", "stories", "tickets.md"), "# Ticket queue\n\nBody.\n\n## Acceptance criteria\n- x\n");
+    await writeFile(path.join(dir, "docs", "prototypes", "tickets", "index.html"), "<html><body>v1</body></html>");
+    const state = await StateStore.open(path.join(dir, ".foreman"));
+    await state.addStageSpend("tickets", { role: "analyst", model: "opus", costUsd: 0.4 });
+    await state.addStageSpend("tickets", { role: "designer", model: "opus", costUsd: 0.9 });
+    await state.addStageSpend("tickets", { role: "critic", model: "sonnet", costUsd: 0.1 });
+
+    out = [];
+    expect(await main(["status", "--repo", dir, "--json"])).toBe(0);
+    const j = JSON.parse(out.join("\n"));
+    expect(j.modelUsage).toEqual([
+      { model: "opus", calls: 2, roles: ["analyst", "designer"], costUsd: 1.3, pctOfCost: 92.9 },
+      { model: "sonnet", calls: 1, roles: ["critic"], costUsd: 0.1, pctOfCost: 7.1 },
+    ]);
+    expect(j.tasks.map((t: { id: string }) => t.id)).not.toContain("story:tickets"); // not a task
+    expect(j.stories).toEqual([{ id: "tickets", title: "Ticket queue", prototype: "draft", costUsd: 1.4, calls: 3 }]);
+
+    out = [];
+    await main(["status", "--repo", dir]);
+    const text = out.join("\n");
+    expect(text).toMatch(/opus\s+2 calls\s+\$\s*1\.30\s+92\.9%\s+analyst, designer/);
+    expect(text).toMatch(/Stories and prototypes:\n\s+tickets\s+Needs your approval\s+\$\s*1\.40\s+Ticket queue/);
+    expect(text).not.toContain("story:tickets");
+
+    out = [];
+    await main(["dashboard", "--repo", dir]);
+    const html = await readFile(path.join(dir, ".foreman", "dashboard.html"), "utf8");
+    expect(html).toContain("<h2>Stories and prototypes</h2>");
+    expect(html).toContain("Needs your approval");
+    expect(html).toContain("92.9%");
+    expect(html).toContain("analyst, designer");
+  });
+
+  it("dashboard --watch refreshes every 3 seconds unless told otherwise", async () => {
+    await main(["init", "--repo", dir]);
+    const run = main(["dashboard", "--repo", dir, "--watch"]);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await readFile(path.join(dir, ".foreman", "dashboard.html"), "utf8")).toContain('<meta http-equiv="refresh" content="3">');
+    process.emit("SIGINT");
+    expect(await run).toBe(0);
   });
 
   it("reports config errors with exit code 2", async () => {
