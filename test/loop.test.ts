@@ -341,7 +341,11 @@ describe("TaskRunner: limits", () => {
       coder: (call) =>
         new Promise((resolve) => {
           world.edit("src/a.ts");
-          call.signal.addEventListener("abort", () => resolve({ ok: false, subtype: "aborted" }));
+          const aborted = () => resolve({ ok: false, subtype: "aborted" });
+          // The 120ms limit can fire before this fake is even called on a slow machine; a listener added
+          // after the signal has aborted would never run.
+          if (call.signal.aborted) aborted();
+          else call.signal.addEventListener("abort", aborted);
         }),
     });
     const made = await makeDeps({ agents, configYaml: "limits: { maxMinutesPerTask: 0.002 }" });
