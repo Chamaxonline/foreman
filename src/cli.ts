@@ -514,6 +514,10 @@ function printCritique(outcome: CritiqueOutcome): void {
     console.log(last.critique.verdict === "revise" ? "  Still open when it stopped:" : "  Notes:");
     for (const i of last.critique.issues) console.log(`    [${i.severity}]${i.where ? ` (${i.where})` : ""} ${i.problem}`);
   }
+  if (outcome.layoutIssues.length) {
+    console.log("  The browser measured these layout problems:");
+    for (const l of outcome.layoutIssues) console.log(`    ${l}`);
+  }
   if (outcome.consoleIssues.length) {
     console.log("  The page logged these in the browser:");
     for (const c of outcome.consoleIssues) console.log(`    ${c}`);
@@ -598,7 +602,8 @@ async function cmdPrototype(
           criticPrompt: stage.roles.critic.prompt,
           isProtected: stage.isProtected,
           maxBudgetUsd: stage.maxBudgetUsd - result.costUsd,
-          render: (htmlFile, outDir, prefix) => renderScreens(browser, htmlFile, outDir, prefix, { signal: stage.signal }),
+          render: (htmlFile, outDir, prefix) =>
+            renderScreens(browser, htmlFile, outDir, prefix, { signal: stage.signal, maxScreens: review.maxScreens }),
           signal: stage.signal,
         });
         await stage.state.addSpend(outcome.costUsd);

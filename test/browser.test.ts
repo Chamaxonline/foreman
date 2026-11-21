@@ -5,12 +5,17 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   browserArgs,
+  declaredScreens,
   findBrowser,
   forceDarkCopy,
   injectMeasure,
+  layoutIssueText,
+  NO_VIEWPORT_TAG,
   parseConsoleIssues,
+  parseMeasure,
   pngSize,
   renderScreens,
+  wrapperHtml,
 } from "../src/browser.js";
 import { lockdownHtml } from "../src/prototype.js";
 
@@ -136,9 +141,17 @@ describe("pngSize", () => {
 });
 
 describe("page copies", () => {
-  it("injectMeasure puts the height script before </body>, or at the end without one", () => {
-    expect(injectMeasure("<html><body>hi</body></html>")).toMatch(/hi<script>.*FOREMAN_H=.*<\/script><\/body>/s);
+  it("injectMeasure puts the measuring script before </body>, or at the end without one", () => {
+    expect(injectMeasure("<html><body>hi</body></html>")).toMatch(/hi<script>.*FOREMAN_M=.*<\/script><\/body>/s);
     expect(injectMeasure("<div>hi</div>")).toMatch(/^<div>hi<\/div><script>/);
+  });
+
+  it("wrapperHtml frames the page at an exact size and relays what the page measured", () => {
+    const html = wrapperHtml('file:///p/index.html#/a&b="x"', 390, 900);
+    expect(html).toContain('src="file:///p/index.html#/a&amp;b=&quot;x&quot;"');
+    expect(html).toMatch(/iframe\{[^}]*width:390px;height:900px/);
+    expect(html).toContain("foremanMeasure");
+    expect(html).toContain("FOREMAN_M=");
   });
 
   it("forceDarkCopy makes the dark rules always apply and the light ones never", () => {
@@ -148,6 +161,75 @@ describe("page copies", () => {
     expect(out).toContain("@media all{a{color:#fff}}");
     expect(out).toContain("@media not all{a{color:#000}}");
     expect(out).toMatch(/<style>:root\{color-scheme:dark\}<\/style><\/head>/);
+  });
+});
+
+describe("parseMeasure and layoutIssueText", () => {
+  const raw = '{"h":1200,"iw":390,"sw":620,"hid":false,"over":[{"sel":"div.tabs","right":620,"width":620}]}';
+  const measured = { height: 1200, viewportWidth: 390, scrollWidth: 620, hidden: false, over: [{ sel: "div.tabs", right: 620, width: 620 }] };
+
+  it("reads what the page wrote into its title, including HTML-escaped quotes", () => {
+    expect(parseMeasure(`<html><head><title>FOREMAN_M=${raw}</title></head></html>`)).toEqual(measured);
+    expect(parseMeasure(`<title>FOREMAN_M=${raw.replace(/"/g, "&quot;")}</title>`)).toEqual(measured);
+    expect(parseMeasure(`<title>FOREMAN_M=${raw.replace('"hid":false', '"hid":true')}</title>`)!.hidden).toBe(true);
+    expect(parseMeasure('<title>FOREMAN_M={"h":1,"iw":2,"sw":3}</title>')).toEqual({ height: 1, viewportWidth: 2, scrollWidth: 3, hidden: false, over: [] });
+  });
+
+  it("gives up cleanly on a missing, failed or malformed measurement", () => {
+    expect(parseMeasure("<title>nothing here</title>")).toBeUndefined();
+    expect(parseMeasure('<title>FOREMAN_M={"error":1}</title>')).toBeUndefined();
+    expect(parseMeasure('<title>FOREMAN_M={"h":"tall","iw":1,"sw":1}</title>')).toBeUndefined();
+    expect(parseMeasure("<title>FOREMAN_M={not json}</title>")).toBeUndefined();
+  });
+
+  it("says a page that scrolls sideways does, and names what sticks out", () => {
+    const text = layoutIssueText(measured, "Ticket detail screen")!;
+    expect(text).toMatch(/^At 390px wide \(Ticket detail screen\) the page scrolls sideways: its content is 620px wide\./);
+    expect(text).toContain("div.tabs (reaches 620px, 620px wide)");
+  });
+
+  it("flags content the page hides with overflow clipping, however wide it reports itself", () => {
+    for (const scrollWidth of [620, 390]) {
+      const text = layoutIssueText({ ...measured, scrollWidth, hidden: true })!;
+      expect(text, String(scrollWidth)).toMatch(/hidden by overflow clipping/);
+      expect(text).toContain("div.tabs");
+      expect(text).not.toMatch(/scrolls sideways/);
+    }
+  });
+
+  it("is silent when everything fits, including a page that clips overflow but has none", () => {
+    const fits = { height: 900, viewportWidth: 390, scrollWidth: 390, hidden: false, over: [] };
+    expect(layoutIssueText(fits)).toBeUndefined();
+    expect(layoutIssueText({ ...fits, scrollWidth: 391 })).toBeUndefined(); // 1px of rounding
+    expect(layoutIssueText({ ...fits, hidden: true })).toBeUndefined();
+  });
+});
+
+describe("declaredScreens", () => {
+  const block = (json: string) => `<body><script type="application/json" id="foreman-screens">${json}</script></body>`;
+
+  it("reads the list the page declares, up to the limit, and slugs the names", () => {
+    const html = block('[{"name":"Ticket detail","hash":"#/tickets/1"},{"name":"No results!","hash":"#/empty"},{"name":"Third","hash":"#/c"}]');
+    expect(declaredScreens(html, 2)).toEqual([
+      { name: "Ticket detail", hash: "#/tickets/1", slug: "ticket-detail" },
+      { name: "No results!", hash: "#/empty", slug: "no-results" },
+    ]);
+    expect(declaredScreens(html, 0)).toEqual([]);
+  });
+
+  it("makes duplicate names unique and falls back for names with no letters", () => {
+    const out = declaredScreens(block('[{"name":"Detail","hash":"#/a"},{"name":"Detail","hash":"#/b"},{"name":"!!!","hash":"#/c"}]'), 5);
+    expect(out.map((s) => s.slug)).toEqual(["detail", "detail-2", "screen"]);
+  });
+
+  it("ignores bad entries, malformed JSON, a non-list and a missing block", () => {
+    expect(declaredScreens(block('[{"name":"No hash","hash":"/x"},{"name":5,"hash":"#/a"},{"name":"  ","hash":"#/b"},{"hash":"#/c"},null,"x",{"name":"Ok","hash":"#/ok"}]'), 5)).toEqual([
+      { name: "Ok", hash: "#/ok", slug: "ok" },
+    ]);
+    expect(declaredScreens(block("[not json"), 5)).toEqual([]);
+    expect(declaredScreens(block('{"name":"x","hash":"#/a"}'), 5)).toEqual([]);
+    expect(declaredScreens("<body>no block</body>", 5)).toEqual([]);
+    expect(declaredScreens(block(`[{"name":"Long","hash":"#${"x".repeat(300)}"}]`), 5)).toEqual([]);
   });
 });
 
@@ -175,7 +257,10 @@ body{margin:0;background:#fff;color:#111;font:16px system-ui}
     const r = await renderScreens(browser!, file, path.join(dir, "shots"), "r1");
 
     expect(r.screens.map((s) => s.viewport.name)).toEqual(["desktop", "mobile", "desktop-dark"]);
-    expect(r.screens.map((s) => s.width)).toEqual([1280, 390, 1280]);
+    // A browser window is never narrower than about 500px, so the 390px view is a
+    // 390px frame centered in a 500px-wide image.
+    expect(r.screens.map((s) => s.width)).toEqual([1280, 500, 1280]);
+    expect(r.screens[1]!.description).toMatch(/390px-wide frame in the middle of a gray canvas/);
     for (const s of r.screens) {
       expect(path.basename(s.file)).toBe(`r1-${s.viewport.name}.png`);
       expect(s.height).toBeGreaterThan(1500); // the page is 2600px tall: capped at 2000, not cut at one screen
@@ -186,4 +271,76 @@ body{margin:0;background:#fff;color:#111;font:16px system-ui}
     expect(await sha(dark!.file)).not.toBe(await sha(desktop!.file));
     expect(r.consoleIssues.some((i) => /Content Security Policy/.test(i))).toBe(true);
   }, 180_000);
+
+  const VIEWPORT = '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  const page = (head: string, body: string) => `<!doctype html><html><head><meta charset="utf-8">${VIEWPORT}<style>body{margin:0}${head}</style></head><body>${body}</body></html>`;
+  const render = async (name: string, html: string, maxScreens = 0) => {
+    const file = path.join(dir, `${name}.html`);
+    await writeFile(file, lockdownHtml(html));
+    return renderScreens(browser!, file, path.join(dir, name), "r1", { maxScreens });
+  };
+
+  it("lays a page out at exactly 390px wide: a responsive page is clean, and a page that really overflows is named", async () => {
+    const ok = await render(
+      "responsive",
+      page(".row{display:flex;flex-wrap:wrap;gap:8px;padding:8px}.card{flex:1 1 150px;height:40px;background:#0a7}", '<div class="row"><div class="card"></div><div class="card"></div><div class="card"></div></div>'),
+    );
+    expect(ok.layoutIssues).toEqual([]);
+
+    // 620px wide: fine on a desktop, wider than a 390px phone
+    const wide = await render("wide", page(".tabs{display:flex;width:620px;height:40px;background:#0a7}", '<div class="tabs" id="tabs"></div>'));
+    expect(wide.layoutIssues).toHaveLength(1);
+    expect(wide.layoutIssues[0]).toMatch(/^At 390px wide the page scrolls sideways: its content is 620px wide\./);
+    expect(wide.layoutIssues[0]).toContain("div#tabs.tabs (reaches 620px, 620px wide)");
+  }, 180_000);
+
+  it("catches overflow that the page hides with overflow-x: hidden", async () => {
+    const hidden = await render(
+      "hidden",
+      page("html,body{overflow-x:hidden}.tabs{display:flex;width:620px;height:40px;background:#0a7}", '<div class="tabs" id="tabs"></div>'),
+    );
+    expect(hidden.layoutIssues).toHaveLength(1);
+    expect(hidden.layoutIssues[0]).toMatch(/hidden by overflow clipping/);
+    expect(hidden.layoutIssues[0]).toContain("div#tabs.tabs");
+  }, 180_000);
+
+  it("does not blame a wide table that sits inside its own scrolling box", async () => {
+    const r = await render(
+      "scrollbox",
+      page(".box{overflow-x:auto}table{width:800px;border-collapse:collapse}td{border:1px solid #999;padding:8px}", '<div class="box"><table><tr><td>a</td><td>b</td></tr></table></div>'),
+    );
+    expect(r.layoutIssues).toEqual([]);
+  }, 180_000);
+
+  it("reports a missing viewport tag", async () => {
+    const r = await render("noviewport", "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>hi</body></html>");
+    expect(r.layoutIssues).toContain(NO_VIEWPORT_TAG);
+  }, 180_000);
+
+  it("captures the screens a page declares, at desktop and mobile, by opening their hash", async () => {
+    const routed = page(
+      "",
+      `<div id="v"></div><script>function r(){document.getElementById('v').textContent=location.hash||'HOME';document.body.style.background=location.hash?'#fde68a':'#fff'}addEventListener('hashchange',r);r()</script>` +
+        `<script type="application/json" id="foreman-screens">[{"name":"Ticket detail","hash":"#/tickets/1"},{"name":"No results","hash":"#/empty"}]</script>`,
+    );
+
+    const none = await render("routes0", routed);
+    expect(none.screens).toHaveLength(3); // declared screens are opt-in
+
+    const some = await render("routes2", routed, 2);
+    expect(some.screens.map((s) => path.basename(s.file))).toEqual([
+      "r1-desktop.png",
+      "r1-mobile.png",
+      "r1-desktop-dark.png",
+      "r1-ticket-detail-desktop.png",
+      "r1-ticket-detail-mobile.png",
+      "r1-no-results-desktop.png",
+      "r1-no-results-mobile.png",
+    ]);
+    expect(some.screens[3]!.description).toMatch(/"Ticket detail" screen \(the page opened at #\/tickets\/1\), desktop/);
+    // the hash was really opened: the declared screen is not the same picture as the first screen
+    expect(await sha(some.screens[3]!.file)).not.toBe(await sha(some.screens[0]!.file));
+
+    expect((await render("routes1", routed, 1)).screens).toHaveLength(5);
+  }, 240_000);
 });

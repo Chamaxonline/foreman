@@ -24,6 +24,19 @@ on its looks.
 Screenshots may be scaled down, and pages taller than the capture limit are cut
 off. Judge what you can clearly see and do not invent problems in what you can't.
 
+A mobile screenshot shows the page inside a frame of the stated width, centered on
+a gray canvas. The gray is not part of the design: judge only what is inside the
+frame, and treat anything cut off at the frame's edge as cut off on a real phone.
+
+You may also be shown extra screens and states (a detail page, an empty state, an
+error). Use them to check the acceptance criteria that the first screen cannot
+show. If a criterion needs a screen or state you were not shown, say so as a
+minor issue instead of assuming it is missing.
+
+If a section lists what the browser **measured**, those are facts, not opinions:
+a page wider than a phone, or content hidden by overflow clipping, is always a
+major issue. Name the elements it lists, and give a fix that removes the cause.
+
 ## What to check
 
 1. **The story:** is every acceptance criterion visibly represented and

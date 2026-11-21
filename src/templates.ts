@@ -145,7 +145,7 @@ docs:
 #   dir: docs/prototypes
 #   designBrief: docs/design.md
 #   browser: /usr/bin/chromium        # optional: which browser to use
-#   critique: { enabled: true, maxRevisions: 2 }
+#   critique: { enabled: true, maxRevisions: 2, maxScreens: 3 }
 
 # Extra paths agents may never modify (CI, test/lint config, foreman files are always protected)
 protectedPaths: []

@@ -113,6 +113,8 @@ const prototypeSchema = z
       .object({
         enabled: z.boolean().default(true),
         maxRevisions: z.number().int().min(1).max(5).default(2),
+        /** How many extra screens or states the prototype declares (#/route) to capture too, at desktop and mobile. 0 = only the first screen. */
+        maxScreens: z.number().int().min(0).max(6).default(3),
       })
       .prefault({}),
     /** Path to a Chrome, Edge or Chromium executable; otherwise FOREMAN_BROWSER, then common install locations. */

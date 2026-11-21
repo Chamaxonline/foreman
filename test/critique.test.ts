@@ -57,6 +57,13 @@ describe("critiqueFeedback and critiquePrompt", () => {
     expect(text).toMatch(/keep everything that already works/);
   });
 
+  it("feedback and prompt leave out the measured-facts sections when nothing was measured", () => {
+    const c = parseCritique(verdict({ verdict: "revise", issues: [issue()] }), "") as Critique;
+    expect(critiqueFeedback(c)).not.toContain("Measured in a real browser");
+    expect(critiquePrompt({ path: "s.md", content: "x" }, [], 1, [])).not.toContain("Measured by the browser");
+    expect(critiqueFeedback(c, ["A fact."])).toContain("- A fact.");
+  });
+
   it("the prompt lists every screenshot to open, plus console output and last review's issues when there are any", () => {
     const shots = [
       { path: ".foreman/screens/pdf/r2-desktop.png", description: "desktop, 1280px wide, light mode" },
@@ -127,6 +134,7 @@ describe("critiqueAndRefine", () => {
       log.push(prefix);
       return {
         consoleIssues: [],
+        layoutIssues: [],
         ...over,
         screens: VIEWPORTS.map((vp) => ({ viewport: vp, file: path.join(outDir, `${prefix}-${vp.name}.png`), width: vp.width, height: 900 })),
       };
@@ -217,6 +225,38 @@ describe("critiqueAndRefine", () => {
     const out = await critiqueAndRefine(req(a, { render: render({ consoleIssues: ["Uncaught TypeError: x is null"] }) }));
     expect(out.consoleIssues).toEqual(["Uncaught TypeError: x is null"]);
     expect(a.critic()[0]!.prompt).toContain("Uncaught TypeError: x is null");
+  });
+
+  it("gives measured layout facts to the critic as defects and to the designer to fix first", async () => {
+    const fact = "At 390px wide the page scrolls sideways: its content is 620px wide. Sticking out past the screen: div#tabs.tabs (reaches 620px, 620px wide).";
+    const a = agents({ critic: [structured(verdict({ verdict: "revise", issues: [issue()] })), structured(verdict())] });
+    const out = await critiqueAndRefine(req(a, { render: render({ layoutIssues: [fact] }) }));
+
+    const first = a.critic()[0]!.prompt;
+    expect(first).toContain("## Measured by the browser (facts, not opinions)");
+    expect(first).toContain(fact);
+    expect(first).toMatch(/report it as a major issue and name the elements/);
+
+    const feedback = a.designer()[0]!.prompt;
+    expect(feedback).toContain("Measured in a real browser (facts, not opinions; fix these first)");
+    expect(feedback).toContain("div#tabs.tabs (reaches 620px, 620px wide)");
+    expect(out.layoutIssues).toEqual([fact]);
+  });
+
+  it("tells the critic what each extra screenshot shows", async () => {
+    const a = agents({ critic: [structured(verdict())] });
+    const withScreens = async (outDir: string, prefix: string): Promise<RenderResult> => ({
+      consoleIssues: [],
+      layoutIssues: [],
+      screens: [
+        { viewport: VIEWPORTS[0]!, file: path.join(outDir, `${prefix}-desktop.png`), width: 1280, height: 900 },
+        { viewport: VIEWPORTS[0]!, description: 'the "Ticket detail" screen (the page opened at #/tickets/1), desktop, 1280px wide, light mode', file: path.join(outDir, `${prefix}-ticket-detail-desktop.png`), width: 1280, height: 900 },
+      ],
+    });
+    await critiqueAndRefine(req(a, { render: (_f, outDir, prefix) => withScreens(outDir, prefix) }));
+    const prompt = a.critic()[0]!.prompt;
+    expect(prompt).toContain("`.foreman/screens/pdf/r1-desktop.png`: desktop, 1280px wide, light mode");
+    expect(prompt).toContain('`.foreman/screens/pdf/r1-ticket-detail-desktop.png`: the "Ticket detail" screen (the page opened at #/tickets/1)');
   });
 
   it("does not pretend a design was reviewed when the critic could not see the screenshots", async () => {

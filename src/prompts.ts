@@ -348,6 +348,7 @@ export function critiquePrompt(
   round: number,
   consoleIssues: string[],
   previous: CritiqueIssue[] = [],
+  layoutIssues: string[] = [],
 ): string {
   const lines = [
     `# Review the prototype for ${story.path} (review ${round})`,
@@ -363,6 +364,14 @@ export function critiquePrompt(
     "Pages taller than the capture limit are cut off, and large images may be scaled down.",
     "",
   ];
+  if (layoutIssues.length) {
+    lines.push(
+      "## Measured by the browser (facts, not opinions)",
+      ...layoutIssues.map((l) => `- ${l}`),
+      "Each of these is a real defect: report it as a major issue and name the elements responsible.",
+      "",
+    );
+  }
   if (consoleIssues.length) {
     lines.push("## What the page logged in the browser", ...consoleIssues.map((c) => `- ${c}`), "");
   }
@@ -379,11 +388,12 @@ export function critiquePrompt(
 }
 
 /** The critic's issues, worded as feedback for the designer's revision. Majors first, at most eight. */
-export function critiqueFeedback(c: Critique): string {
+export function critiqueFeedback(c: Critique, layoutIssues: string[] = []): string {
   const issues = [...c.issues].sort((a, b) => Number(b.severity === "major") - Number(a.severity === "major")).slice(0, 8);
   return [
     "A design review of screenshots of this prototype (desktop, mobile and dark mode) found problems. Fix them, major ones first, and keep everything that already works:",
     ...issues.map((i) => `- [${i.severity}]${i.where ? ` (${i.where})` : ""} ${i.problem}${i.fix ? ` Fix: ${i.fix}` : ""}`),
+    layoutIssues.length ? `\nMeasured in a real browser (facts, not opinions; fix these first):\n${layoutIssues.map((l) => `- ${l}`).join("\n")}` : "",
     c.summary.trim() ? `\nReviewer's summary: ${c.summary.trim()}` : "",
   ]
     .filter(Boolean)

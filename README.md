@@ -464,7 +464,7 @@ prototype:
   dir: docs/prototypes
   # designBrief: docs/design.md   # your colors, type, spacing; the designer follows it
   # browser: /usr/bin/chromium    # Chrome/Edge/Chromium for the design review; else FOREMAN_BROWSER, else found automatically
-  critique: { enabled: true, maxRevisions: 2 }   # screenshot review, and how many times the designer may be sent back
+  critique: { enabled: true, maxRevisions: 2, maxScreens: 3 }   # screenshot review: how many times the designer may be sent back, and how many extra screens to capture
 protectedPaths: []              # extra globs agents may never modify
 dayBoundary: utc                # utc | local; when the daily cap resets
 ```
@@ -612,12 +612,25 @@ to the next step on its own.
   missing states and the generic look. Its problems go back to the designer, up
   to `prototype.critique.maxRevisions` times (default 2), and the last review
   always looks at the final version. What it found and what is still open is
-  printed, and the screenshots it saw are in `.foreman/screens/<id>/`. It also
-  reports script errors and blocked requests the page logged. Each review is one
-  more vision call and each fix one more designer call, all within your spend
-  limits. It needs a browser installed (set `prototype.browser` or
-  `FOREMAN_BROWSER` to pick one); without one it is skipped with a note. Turn it
-  off with `--no-critique` or `prototype.critique.enabled: false`.
+  printed, and the screenshots it saw are in `.foreman/screens/<id>/`. Each
+  review is one more vision call and each fix one more designer call, all within
+  your spend limits.
+  - **Measured, not just looked at.** The mobile view is a true 390px-wide frame
+    (a browser window can't go narrower than about 500px, so it is shown inside
+    a gray canvas), and foreman measures it: a page that scrolls sideways, or
+    hides overflow with `overflow-x: hidden`, is reported with the elements
+    sticking out, as is a missing viewport tag. The critic is told these are
+    facts and the designer is told to fix them first. Script errors and blocked
+    requests the page logged are reported too.
+  - **More than the first screen.** The designer lists the screens and states the
+    story needs (a detail page, an empty state, an error) as hash routes in a
+    small JSON block, and foreman captures up to `prototype.critique.maxScreens`
+    of them (default 3) at desktop and mobile width, so the critic can check the
+    acceptance criteria the first screen can't show. Set it to 0 to review only
+    the first screen.
+  - It needs a browser installed (set `prototype.browser` or `FOREMAN_BROWSER`
+    to pick one); without one it is skipped with a note. Turn it off with
+    `--no-critique` or `prototype.critique.enabled: false`.
 - **Approval** records a hash of the exact `index.html` in `approval.json`.
   Editing the file afterwards makes the approval stale, and `--feedback` withdraws
   it. Agents can't write `approval.json`; it is a protected path.
@@ -754,7 +767,7 @@ adds it to `.git/info/exclude`.
 | `state.json` (+ `.bak`) | Per-task status, attempts, history, cost, PR links; daily spend; runs. Written atomically. |
 | `reports/run-<id>.md` / `.json` | Run report. `latest.md` and `latest.json` point at the newest run. |
 | `dashboard.html` | The page written by `foreman dashboard` |
-| `screens/<id>/` | The screenshots from the last design review of a prototype (`r1-desktop.png`, `r1-mobile.png`, `r1-desktop-dark.png`, then `r2-...` after a fix) |
+| `screens/<id>/` | The screenshots from the last design review of a prototype (`r1-desktop.png`, `r1-mobile.png`, `r1-desktop-dark.png`, plus `r1-<screen>-desktop.png` and `-mobile.png` for each declared screen, then `r2-...` after a fix) |
 | `logs/foreman.log` | Runner log (read it with `foreman logs`) |
 | `logs/<run-id>/<task>.log` | Full prompts, tool calls and results for each task |
 | `worktrees/` | Task worktrees, removed after each task unless `--keep-worktrees` is set |

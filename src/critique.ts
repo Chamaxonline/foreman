@@ -45,6 +45,8 @@ export interface CritiqueOutcome {
   costUsd: number;
   /** Errors and blocked requests the page logged in the final render. */
   consoleIssues: string[];
+  /** Layout problems measured in the final render, such as the page being wider than a phone. */
+  layoutIssues: string[];
   /** Why the loop ended early, when it did. The prototype built so far is kept. */
   stopped?: string;
   /** Repo-relative folder holding the screenshots. */
@@ -68,10 +70,11 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
   const rounds: CritiqueRound[] = [];
   let spent = 0;
   let consoleIssues: string[] = [];
+  let layoutIssues: string[] = [];
   let stopped: string | undefined;
   let previous: CritiqueIssue[] = [];
   const left = () => req.maxBudgetUsd - spent;
-  const done = (): CritiqueOutcome => ({ rounds, costUsd: spent, consoleIssues, screensDir, ...(stopped ? { stopped } : {}) });
+  const done = (): CritiqueOutcome => ({ rounds, costUsd: spent, consoleIssues, layoutIssues, screensDir, ...(stopped ? { stopped } : {}) });
 
   await rm(screensAbs, { recursive: true, force: true }).catch(() => undefined);
 
@@ -87,10 +90,11 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
       return ((stopped = `Could not render the prototype: ${(e as Error).message}`), done());
     }
     consoleIssues = rendered.consoleIssues;
+    layoutIssues = rendered.layoutIssues;
     const shots = rendered.screens.map((s) => ({
       file: s.file,
       path: `${screensDir}/${path.basename(s.file)}`,
-      description: s.viewport.description,
+      description: s.description ?? s.viewport.description,
     }));
 
     let critique: Critique | undefined;
@@ -99,7 +103,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
         role: "critic",
         model: cfg.models.critic,
         systemPrompt: req.criticPrompt,
-        prompt: critiquePrompt(story, shots, round, consoleIssues, previous),
+        prompt: critiquePrompt(story, shots, round, consoleIssues, previous, layoutIssues),
         cwd: repoDir,
         readOnly: true,
         allowBash: false,
@@ -145,7 +149,7 @@ export async function critiqueAndRefine(req: CritiqueRequest): Promise<CritiqueO
       const rev = await writePrototype({
         repoDir,
         id,
-        feedback: critiqueFeedback(critique),
+        feedback: critiqueFeedback(critique, layoutIssues),
         config: cfg,
         agents: req.agents,
         systemPrompt: req.designerPrompt,

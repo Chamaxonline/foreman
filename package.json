@@ -1,7 +1,7 @@
 {
   "name": "claude-foreman",
-  "version": "0.1.0",
-  "description": "Autonomous orchestrator: takes software tasks, executes them with Claude, verifies the result, and opens GitHub PRs.",
+  "version": "0.2.0",
+  "description": "Autonomous orchestrator: turns an idea into a story and a clickable prototype, then builds approved work with Claude, verifies it with your real checks, and opens GitHub or Azure DevOps PRs.",
   "type": "module",
   "license": "MIT",
   "author": "chamathran",
@@ -18,8 +18,10 @@
     "agent",
     "orchestrator",
     "github",
+    "azure-devops",
     "automation",
-    "pull-request"
+    "pull-request",
+    "prototype"
   ],
   "bin": {
     "foreman": "dist/cli.js",

@@ -79,7 +79,7 @@ pr: { labels: [bot, foreman] }
 
   it("prototype defaults to docs/prototypes with no design brief, and designer defaults to opus", () => {
     const cfg = parseConfig(`checks: { test: npm test }`);
-    expect(cfg.prototype).toEqual({ dir: "docs/prototypes", critique: { enabled: true, maxRevisions: 2 } });
+    expect(cfg.prototype).toEqual({ dir: "docs/prototypes", critique: { enabled: true, maxRevisions: 2, maxScreens: 3 } });
     expect(cfg.models.designer).toBe("opus");
     const custom = parseConfig(
       `checks: { test: npm test }\nprototype: { dir: ui/protos, designBrief: docs/design.md }\nmodels: { designer: sonnet }`,
@@ -87,14 +87,16 @@ pr: { labels: [bot, foreman] }
     expect(custom.prototype).toEqual({
       dir: "ui/protos",
       designBrief: "docs/design.md",
-      critique: { enabled: true, maxRevisions: 2 },
+      critique: { enabled: true, maxRevisions: 2, maxScreens: 3 },
     });
     expect(custom.models.designer).toBe("sonnet");
   });
 
   it("the design review can be tuned or turned off, and has sane bounds", () => {
     const off = parseConfig(`checks: { test: npm test }\nprototype: { critique: { enabled: false }, browser: /usr/bin/chromium }\nmodels: { critic: sonnet }`);
-    expect(off.prototype.critique).toEqual({ enabled: false, maxRevisions: 2 });
+    expect(off.prototype.critique).toEqual({ enabled: false, maxRevisions: 2, maxScreens: 3 });
+    expect(parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxScreens: 0 } }`).prototype.critique.maxScreens).toBe(0);
+    expect(() => parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxScreens: 7 } }`)).toThrow(/maxScreens/);
     expect(off.prototype.browser).toBe("/usr/bin/chromium");
     expect(off.models.critic).toBe("sonnet");
     expect(parseConfig(`checks: { test: npm test }\nprototype: { critique: { maxRevisions: 4 } }`).prototype.critique.maxRevisions).toBe(4);

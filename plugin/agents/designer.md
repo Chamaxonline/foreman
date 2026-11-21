@@ -33,6 +33,40 @@ It must make the story's acceptance criteria visible and clickable:
 - a small, unobtrusive "Prototype, sample data" tag in a corner so nobody mistakes
   it for the product
 
+## Screens and states a reviewer must be able to see
+
+A reviewer is shown screenshots, and a screenshot only shows the page as it first
+loads. So every screen and state the story needs must be reachable by a URL hash,
+and you list them in one JSON block that foreman reads (it never runs it):
+
+```html
+<script type="application/json" id="foreman-screens">
+[
+  {"name": "Ticket detail", "hash": "#/tickets/1047"},
+  {"name": "No results", "hash": "#/tickets?status=solved&q=zzz"},
+  {"name": "Ticket not found", "hash": "#/tickets/9999"}
+]
+</script>
+```
+
+- Put the most important screens and states first: foreman captures only the
+  first few, at desktop and mobile width.
+- Opening `index.html#/tickets/1047` straight from disk must show that screen, so
+  render from `location.hash` when the page loads and again on `hashchange`.
+- Do not list the first screen (the page with no hash): it is always captured.
+
+## Fits a phone
+
+At 390px wide nothing may stick out past the screen or scroll sideways, and
+foreman measures this in a real browser and reports the elements responsible. Do
+not hide overflow with `overflow-x: hidden` on the page: that makes content
+unreachable and is reported as a defect. Instead:
+- always include `<meta name="viewport" content="width=device-width, initial-scale=1">`
+- use `box-sizing: border-box`, fluid widths, and `min-width: 0` on flex and grid
+  children that hold text
+- below about 640px, turn wide tables into stacked rows or cards
+- let long words wrap with `overflow-wrap: anywhere`
+
 ## Match the project first
 
 Before designing, look at what already exists:
